@@ -40,7 +40,8 @@ async def do_get_solve_status(deps: CoordinatorDeps) -> str:
 async def do_spawn_swarm(deps: CoordinatorDeps, challenge_name: str) -> str:
     # Retire ALL finished swarms before checking capacity
     finished = [
-        name for name, swarm in deps.swarms.items()
+        name
+        for name, swarm in deps.swarms.items()
         if swarm.cancel_event.is_set()
         or (name in deps.swarm_tasks and deps.swarm_tasks[name].done())
     ]
@@ -64,7 +65,9 @@ async def do_spawn_swarm(deps: CoordinatorDeps, challenge_name: str) -> str:
         output_dir = str(Path(deps.challenges_root))
         ch_dir = await deps.ctfd.pull_challenge(ch_data, output_dir)
         deps.challenge_dirs[challenge_name] = ch_dir
-        deps.challenge_metas[challenge_name] = ChallengeMeta.from_yaml(Path(ch_dir) / "metadata.yml")
+        deps.challenge_metas[challenge_name] = ChallengeMeta.from_yaml(
+            Path(ch_dir) / "metadata.yml"
+        )
 
     from backend.agents.swarm import ChallengeSwarm
 
@@ -79,6 +82,15 @@ async def do_spawn_swarm(deps: CoordinatorDeps, challenge_name: str) -> str:
         coordinator_inbox=deps.coordinator_inbox,
     )
     deps.swarms[challenge_name] = swarm
+
+    # Attach UI observer if available
+    try:
+        from ui.coordinator_bridge import SwarmObserver
+        from ui.event_bus import get_bus
+
+        SwarmObserver.observe(swarm, get_bus())
+    except ImportError:
+        pass
 
     async def _run_and_cleanup() -> None:
         result = await swarm.run()
@@ -119,7 +131,9 @@ async def do_kill_swarm(deps: CoordinatorDeps, challenge_name: str) -> str:
     return f"Swarm for {challenge_name} cancelled"
 
 
-async def do_bump_agent(deps: CoordinatorDeps, challenge_name: str, model_spec: str, insights: str) -> str:
+async def do_bump_agent(
+    deps: CoordinatorDeps, challenge_name: str, model_spec: str, insights: str
+) -> str:
     swarm = deps.swarms.get(challenge_name)
     if not swarm:
         return f"No swarm running for {challenge_name}"
@@ -130,7 +144,9 @@ async def do_bump_agent(deps: CoordinatorDeps, challenge_name: str, model_spec: 
     return f"Bumped {model_spec} on {challenge_name}"
 
 
-async def do_read_solver_trace(deps: CoordinatorDeps, challenge_name: str, model_spec: str, last_n: int = 20) -> str:
+async def do_read_solver_trace(
+    deps: CoordinatorDeps, challenge_name: str, model_spec: str, last_n: int = 20
+) -> str:
     """Read the last N trace events from a solver's JSONL log."""
     swarm = deps.swarms.get(challenge_name)
     if not swarm:
@@ -152,14 +168,22 @@ async def do_read_solver_trace(deps: CoordinatorDeps, challenge_name: str, model
                 t = d.get("type", "?")
                 if t == "tool_call":
                     args_str = str(d.get("args", ""))[:100]
-                    summary.append(f"step {d.get('step','?')} CALL {d.get('tool','?')}: {args_str}")
+                    summary.append(
+                        f"step {d.get('step', '?')} CALL {d.get('tool', '?')}: {args_str}"
+                    )
                 elif t == "tool_result":
                     result_str = str(d.get("result", ""))[:100]
-                    summary.append(f"step {d.get('step','?')} RESULT {d.get('tool','?')}: {result_str}")
+                    summary.append(
+                        f"step {d.get('step', '?')} RESULT {d.get('tool', '?')}: {result_str}"
+                    )
                 elif t in ("finish", "error", "bump", "turn_failed"):
-                    summary.append(f"** {t}: {json.dumps({k:v for k,v in d.items() if k != 'ts'})}")
+                    summary.append(
+                        f"** {t}: {json.dumps({k: v for k, v in d.items() if k != 'ts'})}"
+                    )
                 elif t == "usage":
-                    summary.append(f"usage: in={d.get('input_tokens',0)} out={d.get('output_tokens',0)} cost=${d.get('cost_usd',0):.4f}")
+                    summary.append(
+                        f"usage: in={d.get('input_tokens', 0)} out={d.get('output_tokens', 0)} cost=${d.get('cost_usd', 0):.4f}"
+                    )
                 else:
                     summary.append(f"{t}: {str(d)[:80]}")
             except Exception:

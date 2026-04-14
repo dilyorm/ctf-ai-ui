@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CTF Agent Dashboard</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <!-- ── Header ─────────────────────────────────────────────────────── -->
+  <header class="header">
+    <div class="header-brand">
+      <span class="brand-icon">⚡</span>
+      <span class="brand-name">CTF Agent</span>
+      <span class="brand-sub">Multi-Model Solver Swarm</span>
+    </div>
+
+    <div class="header-stats" id="header-stats">
+      <div class="stat-chip" id="stat-challenges">
+        <span class="stat-label">Challenges</span>
+        <span class="stat-value" id="val-challenges">{{ challenge_count }}</span>
+      </div>
+      <div class="stat-chip solved" id="stat-solved">
+        <span class="stat-label">Solved</span>
+        <span class="stat-value" id="val-solved">0</span>
+      </div>
+      <div class="stat-chip cost" id="stat-cost">
+        <span class="stat-label">Cost</span>
+        <span class="stat-value" id="val-cost">${{ "%.2f"|format(total_cost) }}</span>
+      </div>
+      <div class="ctfd-badge {% if ctfd_status.connected %}connected{% else %}disconnected{% endif %}" id="ctfd-badge">
+        <span class="dot"></span>
+        <span id="ctfd-label">CTFd {% if ctfd_status.connected %}Connected{% else %}Disconnected{% endif %}</span>
+      </div>
+    </div>
+
+    <div class="header-user">
+      {% if user %}
+        <img class="avatar" src="{{ user.avatar_url }}" alt="{{ user.login }}" title="{{ user.name or user.login }}" />
+        <span class="username">{{ user.name or user.login }}</span>
+        <a class="btn btn-sm btn-ghost" href="/auth/logout">Logout</a>
+      {% elif github_login_enabled %}
+        <a class="btn btn-sm btn-github" href="/auth/github">
+          <svg class="github-icon" viewBox="0 0 16 16" fill="currentColor" width="16" height="16">
+            <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+          </svg>
+          Sign in with GitHub
+        </a>
+      {% else %}
+        <span class="no-auth">GitHub auth not configured</span>
+      {% endif %}
+    </div>
+  </header>
+
+  <!-- ── Main layout ────────────────────────────────────────────────── -->
+  <div class="layout">
+
+    <!-- Left sidebar: challenge list -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <h2>Challenges</h2>
+        <button class="btn btn-sm" id="btn-config" title="Configure">⚙</button>
+      </div>
+
+      <div class="challenge-filters">
+        <button class="filter-btn active" data-filter="all">All</button>
+        <button class="filter-btn" data-filter="running">Running</button>
+        <button class="filter-btn" data-filter="solved">Solved</button>
+        <button class="filter-btn" data-filter="pending">Pending</button>
+      </div>
+
+      <div class="challenge-list" id="challenge-list">
+        <div class="empty-state">No challenges yet. Start the coordinator to begin.</div>
+      </div>
+    </aside>
+
+    <!-- Main content: selected challenge detail -->
+    <main class="main-panel" id="main-panel">
+      <div class="welcome-screen" id="welcome-screen">
+        <div class="welcome-icon">⚡</div>
+        <h1>CTF Agent Dashboard</h1>
+        <p>Select a challenge from the list to see solver progress,<br/>or start the coordinator to begin solving challenges.</p>
+
+        <div class="quick-start">
+          <h3>Quick Start</h3>
+          <div class="code-block">
+            <code>uv run ctf-solve --ctfd-url https://ctf.example.com --ctfd-token YOUR_TOKEN</code>
+          </div>
+          <p class="hint">Or click <strong>⚙</strong> to configure credentials in the UI.</p>
+        </div>
+      </div>
+
+      <!-- Challenge detail (hidden until selected) -->
+      <div class="challenge-detail" id="challenge-detail" style="display:none">
+        <div class="challenge-header">
+          <div class="challenge-title-row">
+            <h2 id="detail-name">Challenge Name</h2>
+            <span class="status-badge" id="detail-status">pending</span>
+          </div>
+          <div class="challenge-meta">
+            <span class="meta-tag" id="detail-category"></span>
+            <span class="meta-pts" id="detail-value"></span>
+          </div>
+        </div>
+
+        <!-- Flag display -->
+        <div class="flag-banner" id="flag-banner" style="display:none">
+          <span class="flag-label">FLAG FOUND</span>
+          <code class="flag-text" id="flag-text"></code>
+          <button class="btn btn-sm" id="btn-copy-flag" title="Copy">Copy</button>
+        </div>
+
+        <!-- Model racing grid -->
+        <div class="section">
+          <h3 class="section-title">Model Race</h3>
+          <div class="models-grid" id="models-grid"></div>
+        </div>
+
+        <!-- Log stream -->
+        <div class="section">
+          <div class="section-header">
+            <h3 class="section-title">Log Stream</h3>
+            <label class="toggle-label">
+              <input type="checkbox" id="log-autoscroll" checked /> Auto-scroll
+            </label>
+          </div>
+          <div class="log-container" id="log-container"></div>
+        </div>
+      </div>
+    </main>
+
+    <!-- Right panel: cost tracker -->
+    <aside class="right-panel">
+      <div class="panel-section">
+        <h3>Cost Tracker</h3>
+        <div class="cost-total">
+          <span class="cost-amount" id="cost-total-display">${{ "%.4f"|format(total_cost) }}</span>
+          <span class="cost-label">total spend</span>
+        </div>
+        <div class="model-costs" id="model-costs">
+          <div class="empty-state-sm">No usage yet</div>
+        </div>
+      </div>
+
+      <div class="panel-section">
+        <h3>Operator Message</h3>
+        <p class="hint">Send a hint or instruction to the running coordinator.</p>
+        <textarea class="msg-input" id="msg-input" rows="3" placeholder="e.g. The flag format is CTF{...}"></textarea>
+        <button class="btn btn-primary btn-full" id="btn-send-msg">Send to Coordinator</button>
+        <div class="msg-status" id="msg-status"></div>
+      </div>
+
+      <div class="panel-section">
+        <h3>Connection Status</h3>
+        <div class="ws-status" id="ws-status">
+          <span class="dot disconnected"></span>
+          <span id="ws-label">Connecting...</span>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- ── Config modal ───────────────────────────────────────────────── -->
+  <div class="modal-overlay" id="modal-overlay" style="display:none">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>Configuration</h3>
+        <button class="modal-close" id="modal-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-section">
+          <h4>CTFd Connection</h4>
+          <div class="form-group">
+            <label for="cfg-ctfd-url">CTFd URL</label>
+            <input type="url" id="cfg-ctfd-url" placeholder="https://ctf.example.com" />
+          </div>
+          <div class="form-group">
+            <label for="cfg-ctfd-token">CTFd API Token</label>
+            <input type="password" id="cfg-ctfd-token" placeholder="ctfd_your_token_here" />
+          </div>
+        </div>
+
+        <div class="form-section">
+          <h4>AI API Keys</h4>
+          <div class="form-group">
+            <label for="cfg-anthropic">Anthropic API Key</label>
+            <input type="password" id="cfg-anthropic" placeholder="sk-ant-..." />
+          </div>
+          <div class="form-group">
+            <label for="cfg-openai">OpenAI API Key</label>
+            <input type="password" id="cfg-openai" placeholder="sk-..." />
+          </div>
+          <div class="form-group">
+            <label for="cfg-gemini">Gemini API Key</label>
+            <input type="password" id="cfg-gemini" placeholder="AIza..." />
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="btn-cancel-config">Cancel</button>
+        <button class="btn btn-primary" id="btn-save-config">Save & Apply</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

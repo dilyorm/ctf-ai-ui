@@ -88,6 +88,14 @@ async def run_event_loop(
     # Start operator message HTTP endpoint
     msg_server = await _start_msg_server(deps.operator_inbox, deps.msg_port)
 
+    # Install UI bridge if available
+    try:
+        from ui.coordinator_bridge import install_bridge
+
+        install_bridge(deps, cost_tracker)
+    except ImportError:
+        pass
+
     logger.info(
         "Coordinator starting: %d models, %d challenges, %d solved",
         len(deps.model_specs),
@@ -132,13 +140,38 @@ async def run_event_loop(
                     parts.append(f"NEW CHALLENGE: '{evt.challenge_name}' appeared. Spawn a swarm.")
                     # Auto-spawn for new challenges
                     await _auto_spawn_one(deps, evt.challenge_name)
+                    # Emit to UI
+                    try:
+                        from ui.event_bus import get_bus
+
+                        get_bus().emit_sync(
+                            "challenge_new", {"name": evt.challenge_name, "status": "pending"}
+                        )
+                    except ImportError:
+                        pass
                 elif evt.kind == "challenge_solved":
                     parts.append(f"SOLVED: '{evt.challenge_name}' — swarm auto-killed.")
+                    # Emit to UI
+                    try:
+                        from ui.event_bus import get_bus
+
+                        ch_result = deps.results.get(evt.challenge_name, {})
+                        get_bus().emit_sync(
+                            "challenge_solved",
+                            {
+                                "name": evt.challenge_name,
+                                "flag": ch_result.get("flag", ""),
+                            },
+                        )
+                    except ImportError:
+                        pass
 
             # Detect finished swarms
             for name, task in list(deps.swarm_tasks.items()):
                 if task.done():
-                    parts.append(f"SOLVER FINISHED: Swarm for '{name}' completed. Check results or retry.")
+                    parts.append(
+                        f"SOLVER FINISHED: Swarm for '{name}' completed. Check results or retry."
+                    )
                     deps.swarm_tasks.pop(name, None)
 
             # Drain solver-to-coordinator messages
@@ -180,7 +213,7 @@ async def run_event_loop(
                 logger.info("Event -> coordinator: %s", msg[:200])
                 await turn_fn(msg)
 
-    except (KeyboardInterrupt, asyncio.CancelledError):
+    except KeyboardInterrupt, asyncio.CancelledError:
         logger.info("Coordinator shutting down...")
     except Exception as e:
         logger.error("Coordinator fatal: %s", e, exc_info=True)
@@ -217,6 +250,7 @@ async def _auto_spawn_one(deps: CoordinatorDeps, challenge_name: str) -> None:
         return
     try:
         from backend.agents.coordinator_core import do_spawn_swarm
+
         result = await do_spawn_swarm(deps, challenge_name)
         logger.info(f"Auto-spawn {challenge_name}: {result[:100]}")
     except Exception as e:
@@ -254,15 +288,21 @@ async def _start_msg_server(inbox: asyncio.Queue, port: int = 0) -> asyncio.Serv
                 try:
                     data = json.loads(body)
                     message = data.get("message", body.decode())
-                except (json.JSONDecodeError, UnicodeDecodeError):
+                except json.JSONDecodeError, UnicodeDecodeError:
                     message = body.decode("utf-8", errors="replace")
 
                 inbox.put_nowait(message)
                 resp = json.dumps({"ok": True, "queued": message[:200]})
-                writer.write(f"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {len(resp)}\r\n\r\n{resp}".encode())
+                writer.write(
+                    f"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {len(resp)}\r\n\r\n{resp}".encode()
+                )
             else:
-                resp = json.dumps({"error": "POST with JSON body required", "usage": "POST {\"message\": \"...\"}"})
-                writer.write(f"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {len(resp)}\r\n\r\n{resp}".encode())
+                resp = json.dumps(
+                    {"error": "POST with JSON body required", "usage": 'POST {"message": "..."}'}
+                )
+                writer.write(
+                    f"HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {len(resp)}\r\n\r\n{resp}".encode()
+                )
 
             await writer.drain()
         except Exception:

@@ -24,7 +24,9 @@ def _setup_logging(verbose: bool = False) -> None:
     logging.getLogger("urllib3").setLevel(logging.WARNING)
     logging.getLogger("aiodocker").setLevel(logging.WARNING)
     handler = logging.StreamHandler()
-    handler.setFormatter(logging.Formatter("[%(asctime)s] %(levelname)-8s %(message)s", datefmt="%X"))
+    handler.setFormatter(
+        logging.Formatter("[%(asctime)s] %(levelname)-8s %(message)s", datefmt="%X")
+    )
     logging.basicConfig(level=level, handlers=[handler], force=True)
 
 
@@ -36,10 +38,20 @@ def _setup_logging(verbose: bool = False) -> None:
 @click.option("--challenge", default=None, help="Solve a single challenge directory")
 @click.option("--challenges-dir", default="challenges", help="Directory for challenge files")
 @click.option("--no-submit", is_flag=True, help="Dry run — don't submit flags")
-@click.option("--coordinator-model", default=None, help="Model for coordinator (default: claude-opus-4-6)")
-@click.option("--coordinator", default="claude", type=click.Choice(["claude", "codex"]), help="Coordinator backend")
+@click.option(
+    "--coordinator-model", default=None, help="Model for coordinator (default: claude-opus-4-6)"
+)
+@click.option(
+    "--coordinator",
+    default="claude",
+    type=click.Choice(["claude", "codex"]),
+    help="Coordinator backend",
+)
 @click.option("--max-challenges", default=10, type=int, help="Max challenges solved concurrently")
 @click.option("--msg-port", default=0, type=int, help="Operator message port (0 = auto)")
+@click.option("--ui/--no-ui", default=True, help="Launch the web UI dashboard (default: enabled)")
+@click.option("--ui-port", default=8080, type=int, help="Web UI port (default: 8080)")
+@click.option("--ui-host", default="0.0.0.0", help="Web UI host (default: 0.0.0.0)")
 @click.option("-v", "--verbose", is_flag=True, help="Verbose logging")
 def main(
     ctfd_url: str | None,
@@ -53,11 +65,15 @@ def main(
     coordinator: str,
     max_challenges: int,
     msg_port: int,
+    ui: bool,
+    ui_port: int,
+    ui_host: str,
     verbose: bool,
 ) -> None:
     """CTF Agent — multi-model solver swarm.
 
     Run without --challenge to start the full coordinator (Ctrl+C to stop).
+    The web dashboard is available at http://localhost:8080 by default.
     """
     _setup_logging(verbose)
 
@@ -75,12 +91,34 @@ def main(
     console.print(f"  Models: {', '.join(model_specs)}")
     console.print(f"  Image: {settings.sandbox_image}")
     console.print(f"  Max challenges: {max_challenges}")
+    if ui:
+        console.print(
+            f"  Dashboard: http://{ui_host if ui_host != '0.0.0.0' else 'localhost'}:{ui_port}"
+        )
     console.print()
 
     if challenge:
-        asyncio.run(_run_single(settings, challenge, model_specs, no_submit, max_challenges))
+        asyncio.run(
+            _run_single(
+                settings, challenge, model_specs, no_submit, max_challenges, ui, ui_host, ui_port
+            )
+        )
     else:
-        asyncio.run(_run_coordinator(settings, model_specs, challenges_dir, no_submit, coordinator_model, coordinator, max_challenges, msg_port))
+        asyncio.run(
+            _run_coordinator(
+                settings,
+                model_specs,
+                challenges_dir,
+                no_submit,
+                coordinator_model,
+                coordinator,
+                max_challenges,
+                msg_port,
+                ui,
+                ui_host,
+                ui_port,
+            )
+        )
 
 
 async def _run_single(
@@ -89,6 +127,9 @@ async def _run_single(
     model_specs: list[str],
     no_submit: bool,
     max_challenges: int,
+    start_ui: bool = True,
+    ui_host: str = "0.0.0.0",
+    ui_port: int = 8080,
 ) -> None:
     """Run a single challenge with a swarm."""
     from backend.agents.swarm import ChallengeSwarm
@@ -128,9 +169,27 @@ async def _run_single(
         no_submit=no_submit,
     )
 
+    # Start web UI in background if requested
+    ui_task = None
+    if start_ui:
+        ui_task = asyncio.create_task(
+            _start_ui_server(ui_host, ui_port),
+            name="ctf-ui-server",
+        )
+        # Emit the challenge to the UI bus
+        try:
+            from ui.coordinator_bridge import SwarmObserver
+            from ui.event_bus import get_bus
+
+            SwarmObserver.observe(swarm, get_bus())
+            get_bus().emit_sync("ctfd_status", {"connected": True, "url": settings.ctfd_url})
+        except ImportError:
+            pass
+
     try:
         result = await swarm.run()
         from backend.solver_base import FLAG_FOUND
+
         if result and result.status == FLAG_FOUND:
             console.print(f"\n[bold green]FLAG FOUND:[/bold green] {result.flag}")
         else:
@@ -142,6 +201,12 @@ async def _run_single(
         console.print(f"  [bold]Total: ${cost_tracker.total_cost_usd:.2f}[/bold]")
     finally:
         await ctfd.close()
+        if ui_task:
+            ui_task.cancel()
+            try:
+                await ui_task
+            except asyncio.CancelledError, Exception:
+                pass
 
 
 async def _run_coordinator(
@@ -153,6 +218,9 @@ async def _run_coordinator(
     coordinator_backend: str,
     max_challenges: int,
     msg_port: int = 0,
+    start_ui: bool = True,
+    ui_host: str = "0.0.0.0",
+    ui_port: int = 8080,
 ) -> None:
     """Run the full coordinator (continuous until Ctrl+C)."""
     from backend.sandbox import cleanup_orphan_containers, configure_semaphore
@@ -162,31 +230,67 @@ async def _run_coordinator(
     await cleanup_orphan_containers()
     console.print(f"[bold]Starting coordinator ({coordinator_backend}, Ctrl+C to stop)...[/bold]\n")
 
-    if coordinator_backend == "codex":
-        from backend.agents.codex_coordinator import run_codex_coordinator
-        results = await run_codex_coordinator(
-            settings=settings,
-            model_specs=model_specs,
-            challenges_root=challenges_dir,
-            no_submit=no_submit,
-            coordinator_model=coordinator_model,
-            msg_port=msg_port,
+    # Start web UI dashboard in the background
+    ui_task = None
+    if start_ui:
+        ui_task = asyncio.create_task(
+            _start_ui_server(ui_host, ui_port),
+            name="ctf-ui-server",
         )
-    else:
-        from backend.agents.claude_coordinator import run_claude_coordinator
-        results = await run_claude_coordinator(
-            settings=settings,
-            model_specs=model_specs,
-            challenges_root=challenges_dir,
-            no_submit=no_submit,
-            coordinator_model=coordinator_model,
-            msg_port=msg_port,
-        )
+
+    try:
+        if coordinator_backend == "codex":
+            from backend.agents.codex_coordinator import run_codex_coordinator
+
+            results = await run_codex_coordinator(
+                settings=settings,
+                model_specs=model_specs,
+                challenges_root=challenges_dir,
+                no_submit=no_submit,
+                coordinator_model=coordinator_model,
+                msg_port=msg_port,
+            )
+        else:
+            from backend.agents.claude_coordinator import run_claude_coordinator
+
+            results = await run_claude_coordinator(
+                settings=settings,
+                model_specs=model_specs,
+                challenges_root=challenges_dir,
+                no_submit=no_submit,
+                coordinator_model=coordinator_model,
+                msg_port=msg_port,
+            )
+    finally:
+        if ui_task:
+            ui_task.cancel()
+            try:
+                await ui_task
+            except asyncio.CancelledError, Exception:
+                pass
 
     console.print("\n[bold]Final Results:[/bold]")
     for challenge, data in results.get("results", {}).items():
         console.print(f"  {challenge}: {data.get('flag', 'no flag')}")
     console.print(f"\n[bold]Total cost: ${results.get('total_cost_usd', 0):.2f}[/bold]")
+
+
+async def _start_ui_server(host: str = "0.0.0.0", port: int = 8080) -> None:
+    """Start the FastAPI UI server as an asyncio task."""
+    import uvicorn
+
+    config = uvicorn.Config(
+        "ui.server:app",
+        host=host,
+        port=port,
+        log_level="warning",
+        access_log=False,
+    )
+    server = uvicorn.Server(config)
+    try:
+        await server.serve()
+    except asyncio.CancelledError:
+        server.should_exit = True
 
 
 @click.command()

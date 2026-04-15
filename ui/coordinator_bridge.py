@@ -190,7 +190,13 @@ class SwarmObserver:
                     },
                 )
             else:
-                bus.emit_sync("challenge_failed", {"name": name})
+                # A cancelled swarm is usually operator-initiated stop/exclude or
+                # auto-kill after solve; don't mark it as "failed".
+                status = getattr(result, "status", "") if result else ""
+                if status == "cancelled":
+                    bus.emit_sync("challenge_update", {"name": name, "status": "stopped"})
+                else:
+                    bus.emit_sync("challenge_failed", {"name": name})
             return result
 
         swarm.run = patched_run

@@ -202,6 +202,7 @@ body {
 .challenge-item:hover { background: var(--bg3); }
 .challenge-item.active { background: var(--bg3); border-left: 2px solid var(--accent); padding-left: 7px; }
 .challenge-item.ch-stopped { opacity: .55; }
+.challenge-item.ch-excluded { opacity: .6; }
 
 .ch-status-dot {
   width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
@@ -209,6 +210,8 @@ body {
 .ch-status-dot.pending { background: var(--text3); }
 .ch-status-dot.running { background: var(--orange); animation: pulse 1.5s infinite; }
 .ch-status-dot.solved  { background: var(--green); }
+.ch-status-dot.stopped { background: var(--text2); }
+.ch-status-dot.excluded { background: var(--red); }
 .ch-status-dot.failed  { background: var(--red); }
 
 .ch-info { flex: 1; min-width: 0; }
@@ -221,6 +224,7 @@ body {
 }
 .ch-badge.priority { background: rgba(88,166,255,.15); color: var(--accent); }
 .ch-badge.stopped  { background: rgba(248,81,73,.15);  color: var(--red); }
+.ch-badge.excluded { background: rgba(248,81,73,.15);  color: var(--red); }
 
 .empty-state { padding: 20px 14px; color: var(--text3); font-size: 12px; text-align: center; }
 
@@ -269,6 +273,8 @@ body {
 .status-badge.pending { background: var(--bg4); color: var(--text3); }
 .status-badge.running { background: rgba(210,153,34,.15); color: var(--orange); border: 1px solid rgba(210,153,34,.3); }
 .status-badge.solved  { background: rgba(63,185,80,.15);  color: var(--green); border: 1px solid rgba(63,185,80,.3); }
+.status-badge.stopped { background: var(--bg3); color: var(--text2); border: 1px solid var(--border); }
+.status-badge.excluded { background: rgba(248,81,73,.15);  color: var(--red); border: 1px solid rgba(248,81,73,.3); }
 .status-badge.failed  { background: rgba(248,81,73,.15);  color: var(--red); border: 1px solid rgba(248,81,73,.3); }
 
 .meta-tag { padding: 2px 8px; border-radius: var(--radius-sm); background: var(--bg3); border: 1px solid var(--border); font-size: 11px; color: var(--text2); }

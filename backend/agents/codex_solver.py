@@ -227,8 +227,9 @@ class CodexSolver:
             # Subscription mode: isolate per-user credentials by overriding HOME
             # so `codex app-server` reads tokens stored by `codex auth login`.
             import os as _os
+
             codex_env = {**_os.environ, "HOME": codex_config_dir}
-            codex_env.pop("OPENAI_API_KEY", None)   # force subscription, not API key
+            codex_env.pop("OPENAI_API_KEY", None)  # force subscription, not API key
             codex_env["CODEX_DISABLE_TELEMETRY"] = "1"
 
         self._proc = await asyncio.create_subprocess_exec(
@@ -268,9 +269,17 @@ class CodexSolver:
             "cwd": "/challenge",
             "approvalPolicy": "on-request",
             "sandbox": "read-only",
-            "serviceTier": "flex",
             "dynamicTools": SANDBOX_TOOLS,
         }
+        # Some OpenAI deployments reject service_tier=flex. Only set a tier when explicitly requested.
+        try:
+            import os as _os
+
+            service_tier = (_os.environ.get("CODEX_SERVICE_TIER") or "").strip()
+            if service_tier:
+                thread_params["serviceTier"] = service_tier
+        except Exception:
+            pass
         # Reasoning effort for models that support it
         reasoning = REASONING_EFFORT.get(self.model_id)
         if reasoning:

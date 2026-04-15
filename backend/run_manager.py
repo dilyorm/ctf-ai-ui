@@ -29,6 +29,7 @@ class GlobalRunManager:
         # Per-challenge runtime controls (names are challenge slugs/display names)
         self.stopped_challenges: set[str] = set()
         self.priority_challenges: set[str] = set()
+        self.excluded_challenges: set[str] = set()
 
     def status(self) -> dict:
         t = self._task
@@ -42,6 +43,7 @@ class GlobalRunManager:
             "max_concurrent": self._max_concurrent,
             "stopped_challenges": sorted(self.stopped_challenges),
             "priority_challenges": sorted(self.priority_challenges),
+            "excluded_challenges": sorted(self.excluded_challenges),
         }
 
     def stop_challenge(self, name: str) -> dict:
@@ -63,6 +65,19 @@ class GlobalRunManager:
     def set_max_concurrent(self, n: int) -> dict:
         self._max_concurrent = max(1, min(n, 50))
         return {"ok": True, "max_concurrent": self._max_concurrent}
+
+    def toggle_exclude(self, name: str) -> dict:
+        """Toggle excluded state for a specific challenge.
+
+        Excluded challenges should not be auto-spawned again during the current run.
+        """
+        if name in self.excluded_challenges:
+            self.excluded_challenges.discard(name)
+            return {"ok": True, "excluded": False, "name": name}
+        self.excluded_challenges.add(name)
+        # Excluding implies stopped for the current run.
+        self.stopped_challenges.add(name)
+        return {"ok": True, "excluded": True, "stopped": True, "name": name}
 
     async def start(
         self,
@@ -88,6 +103,7 @@ class GlobalRunManager:
             self._last_error = None
             self.stopped_challenges = set()
             self.priority_challenges = set()
+            self.excluded_challenges = set()
 
             async def _runner() -> None:
                 try:
@@ -138,6 +154,13 @@ class GlobalRunManager:
                 await self._task
             except asyncio.CancelledError:
                 pass
+            except Exception:
+                pass
+            # Best-effort cleanup: canceling the coordinator can leave sandboxes running.
+            try:
+                from backend.sandbox import cleanup_orphan_containers
+
+                await cleanup_orphan_containers()
             except Exception:
                 pass
             return {"ok": True, "stopped": True}

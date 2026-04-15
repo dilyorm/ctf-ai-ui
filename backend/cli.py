@@ -75,6 +75,11 @@ def _setup_logging(verbose: bool = False) -> None:
 @click.option("--ui/--no-ui", default=True, help="Launch the web UI dashboard (default: enabled)")
 @click.option("--ui-port", default=8080, type=int, help="Web UI port (default: 8080)")
 @click.option("--ui-host", default="0.0.0.0", help="Web UI host (default: 0.0.0.0)")
+@click.option(
+    "--auto-run/--no-auto-run",
+    default=True,
+    help="Start solving immediately (use --no-auto-run for UI-driven starts)",
+)
 @click.option("-v", "--verbose", is_flag=True, help="Verbose logging")
 def main(
     ctfd_url: str | None,
@@ -95,6 +100,7 @@ def main(
     ui: bool,
     ui_port: int,
     ui_host: str,
+    auto_run: bool,
     verbose: bool,
 ) -> None:
     """CTF Agent — multi-model solver swarm.
@@ -105,10 +111,16 @@ def main(
     _setup_logging(verbose)
 
     settings = Settings(sandbox_image=image)
-    if ctfd_url:
-        settings.ctfd_url = ctfd_url
-    if ctfd_token:
-        settings.ctfd_token = ctfd_token
+    # UI-only mode should not talk to any default CTFd instance.
+    # Clear these before any coordinator logic runs.
+    if not auto_run:
+        settings.ctfd_url = ""
+        settings.ctfd_token = ""
+    else:
+        if ctfd_url:
+            settings.ctfd_url = ctfd_url
+        if ctfd_token:
+            settings.ctfd_token = ctfd_token
     settings.max_concurrent_challenges = max_challenges
 
     # Subscription-backed Claude SDK uses the local Claude Code CLI session.
@@ -190,23 +202,29 @@ def main(
             )
         )
     else:
-        asyncio.run(
-            _run_coordinator(
-                settings,
-                model_specs,
-                challenges_dir,
-                exclude_list,
-                exclude_challenge_regex,
-                no_submit,
-                coordinator_model,
-                coordinator,
-                max_challenges,
-                msg_port,
-                ui,
-                ui_host,
-                ui_port,
+        if not auto_run:
+            if not ui:
+                raise click.ClickException("--no-auto-run requires --ui")
+            # UI-only mode: runs are started via the web UI (/api/run/start).
+            asyncio.run(_start_ui_server(ui_host, ui_port))
+        else:
+            asyncio.run(
+                _run_coordinator(
+                    settings,
+                    model_specs,
+                    challenges_dir,
+                    exclude_list,
+                    exclude_challenge_regex,
+                    no_submit,
+                    coordinator_model,
+                    coordinator,
+                    max_challenges,
+                    msg_port,
+                    ui,
+                    ui_host,
+                    ui_port,
+                )
             )
-        )
 
 
 async def _run_single(
@@ -376,6 +394,9 @@ async def _run_coordinator(
 async def _start_ui_server(host: str = "0.0.0.0", port: int = 8080) -> None:
     """Start the FastAPI UI server as an asyncio task."""
     import uvicorn
+
+    # UI-only server: don't ever spin up a coordinator from .env defaults.
+    # Runs must be started via /api/run/start with an explicit CTF selection.
 
     config = uvicorn.Config(
         "ui.server:app",

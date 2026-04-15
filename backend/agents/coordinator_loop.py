@@ -89,6 +89,11 @@ async def run_event_loop(
     await poller.start()
 
     excluded = set(exclude_challenges or set())
+    stopped: set[str] = set()
+    priority: set[str] = set()
+
+    # Drain operator messages promptly even if the coordinator LLM call blocks.
+    operator_outbox: asyncio.Queue[str] = asyncio.Queue()
     # Support a regex exclusion marker (see CLI: --exclude-challenge-regex)
     excluded_rx = None
     for item in list(excluded):
@@ -129,11 +134,106 @@ async def run_event_loop(
         "Fetch challenges and spawn swarms for all unsolved."
     )
 
+    def _kill(name: str) -> None:
+        swarm = deps.swarms.get(name)
+        if swarm:
+            try:
+                if not swarm.cancel_event.is_set():
+                    swarm.kill()
+            except Exception:
+                logger.warning("Failed to kill swarm for: %s", name, exc_info=True)
+
+        task = deps.swarm_tasks.get(name)
+        if task and not task.done():
+            try:
+                task.cancel()
+            except Exception:
+                logger.warning("Failed to cancel swarm task for: %s", name, exc_info=True)
+
+    async def _operator_watcher() -> None:
+        while True:
+            msg = await deps.operator_inbox.get()
+            # Always forward to the coordinator transcript.
+            try:
+                operator_outbox.put_nowait(msg)
+            except Exception:
+                pass
+
+            text = (msg or "").strip()
+            if not text:
+                continue
+
+            if text == "STOP_ALL" or text.startswith("STOP_ALL"):
+                # Kill/cancel everything we know about.
+                for name in list(deps.swarms.keys()):
+                    stopped.add(name)
+                    _kill(name)
+                continue
+
+            # Deterministic runtime directives.
+            if text.startswith("EXCLUDE_CHALLENGE:"):
+                name = text.split(":", 1)[1].strip()
+                if name:
+                    excluded.add(name)
+                    stopped.add(name)
+                    _kill(name)
+                continue
+
+            if text.startswith("UNEXCLUDE_CHALLENGE:"):
+                name = text.split(":", 1)[1].strip()
+                if name:
+                    excluded.discard(name)
+                continue
+
+            if text.startswith("STOP_CHALLENGE:"):
+                name = text.split(":", 1)[1].strip()
+                if name:
+                    stopped.add(name)
+                    _kill(name)
+                continue
+
+            if text.startswith("RESUME_CHALLENGE:"):
+                name = text.split(":", 1)[1].strip()
+                if name:
+                    stopped.discard(name)
+                continue
+
+            if text.startswith("PRIORITIZE_CHALLENGE:"):
+                name = text.split(":", 1)[1].strip()
+                if name:
+                    priority.add(name)
+                continue
+
+            if text.startswith("UNPRIORITIZE_CHALLENGE:"):
+                name = text.split(":", 1)[1].strip()
+                if name:
+                    priority.discard(name)
+                continue
+
+            # Plain operator hint: broadcast to all active swarms so it has a
+            # deterministic effect (solvers ingest via findings injection).
+            if deps.swarms:
+                try:
+                    await asyncio.gather(
+                        *[
+                            swarm.message_bus.broadcast(text, source="operator")
+                            for swarm in deps.swarms.values()
+                            if getattr(swarm, "message_bus", None) is not None
+                        ],
+                        return_exceptions=True,
+                    )
+                except Exception:
+                    logger.warning("Failed to broadcast operator hint", exc_info=True)
+
+    watcher_task: asyncio.Task | None = asyncio.create_task(
+        _operator_watcher(), name="operator-watcher"
+    )
+
     try:
         await turn_fn(initial_msg)
 
         # Auto-spawn swarms for unsolved challenges if coordinator LLM didn't
-        await _auto_spawn_unsolved(deps, poller, excluded)
+        await _auto_spawn_unsolved(deps, poller, excluded, excluded_rx, stopped, priority)
 
         last_status = asyncio.get_event_loop().time()
 
@@ -157,7 +257,7 @@ async def run_event_loop(
                 if evt.kind == "new_challenge":
                     parts.append(f"NEW CHALLENGE: '{evt.challenge_name}' appeared. Spawn a swarm.")
                     # Auto-spawn for new challenges
-                    await _auto_spawn_one(deps, evt.challenge_name, excluded, excluded_rx)
+                    await _auto_spawn_one(deps, evt.challenge_name, excluded, excluded_rx, stopped)
                     # Emit to UI
                     try:
                         from ui.event_bus import get_bus
@@ -205,10 +305,6 @@ async def run_event_loop(
             if retired:
                 logger.info("Retired %d completed swarm(s)", len(retired))
 
-            # Keep the swarm pool full: spawn for any unsolved challenges that
-            # don't currently have active swarms.
-            await _auto_spawn_unsolved(deps, poller, excluded, excluded_rx)
-
             # Drain solver-to-coordinator messages
             while True:
                 try:
@@ -217,14 +313,18 @@ async def run_event_loop(
                 except asyncio.QueueEmpty:
                     break
 
-            # Drain operator messages
+            # Drain operator messages (forwarded by watcher)
             while True:
                 try:
-                    op_msg = deps.operator_inbox.get_nowait()
+                    op_msg = operator_outbox.get_nowait()
                     parts.append(f"OPERATOR MESSAGE: {op_msg}")
-                    logger.info("Operator message: %s", op_msg[:200])
+                    logger.info("Operator message: %s", (op_msg or "")[:200])
                 except asyncio.QueueEmpty:
                     break
+
+            # Keep the swarm pool full: spawn for any unsolved challenges that
+            # don't currently have active swarms (after applying runtime directives).
+            await _auto_spawn_unsolved(deps, poller, excluded, excluded_rx, stopped, priority)
 
             # Periodic status update — only when there are active swarms or other events
             now = asyncio.get_event_loop().time()
@@ -255,6 +355,8 @@ async def run_event_loop(
     except Exception as e:
         logger.error("Coordinator fatal: %s", e, exc_info=True)
     finally:
+        if watcher_task:
+            watcher_task.cancel()
         if msg_server:
             msg_server.close()
             await msg_server.wait_closed()
@@ -283,11 +385,14 @@ async def _auto_spawn_one(
     challenge_name: str,
     excluded: set[str] | None = None,
     excluded_rx=None,
+    stopped: set[str] | None = None,
 ) -> None:
     """Auto-spawn a swarm for a single challenge if not already running."""
     if excluded and challenge_name in excluded:
         return
     if excluded_rx and excluded_rx.search(challenge_name):
+        return
+    if stopped and challenge_name in stopped:
         return
     if challenge_name in deps.swarms:
         return
@@ -308,6 +413,8 @@ async def _auto_spawn_unsolved(
     poller,
     excluded: set[str] | None = None,
     excluded_rx=None,
+    stopped: set[str] | None = None,
+    priority: set[str] | None = None,
 ) -> None:
     """Auto-spawn swarms for all unsolved challenges that don't have active swarms."""
     unsolved = poller.known_challenges - poller.known_solved
@@ -315,8 +422,14 @@ async def _auto_spawn_unsolved(
         unsolved -= excluded
     if excluded_rx:
         unsolved = {n for n in unsolved if not excluded_rx.search(n)}
-    for name in sorted(unsolved):
-        await _auto_spawn_one(deps, name, excluded, excluded_rx)
+    if stopped:
+        unsolved -= stopped
+
+    prio = set(priority or set())
+    prio_names = sorted([n for n in unsolved if n in prio])
+    other_names = sorted([n for n in unsolved if n not in prio])
+    for name in prio_names + other_names:
+        await _auto_spawn_one(deps, name, excluded, excluded_rx, stopped)
 
 
 async def _start_msg_server(inbox: asyncio.Queue, port: int = 0) -> asyncio.Server | None:

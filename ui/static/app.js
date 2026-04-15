@@ -14,7 +14,7 @@ const state = {
   wsConnected: false,
   logAutoScroll: true,
   filter: "all",
-  runStatus: { running: false, stopped_challenges: [], priority_challenges: [] },
+  runStatus: { running: false, stopped_challenges: [], priority_challenges: [], excluded_challenges: [] },
 };
 
 // ── DOM refs ───────────────────────────────────────────────────────
@@ -214,8 +214,12 @@ function renderChallengeList() {
     const pa = priority.has(a.name) ? -1 : 0;
     const pb = priority.has(b.name) ? -1 : 0;
     if (pa !== pb) return pa - pb;
-    const order = { running: 0, solved: 1, pending: 2, failed: 3 };
-    return (order[a.status] ?? 99) - (order[b.status] ?? 99) || (a.name || "").localeCompare(b.name || "");
+    const order = { running: 0, solved: 1, pending: 2, stopped: 3, excluded: 4, failed: 5 };
+
+    const excluded = new Set(state.runStatus.excluded_challenges || []);
+    const sa = excluded.has(a.name) ? "excluded" : (stopped.has(a.name) ? "stopped" : (a.status || "pending"));
+    const sb = excluded.has(b.name) ? "excluded" : (stopped.has(b.name) ? "stopped" : (b.status || "pending"));
+    return (order[sa] ?? 99) - (order[sb] ?? 99) || (a.name || "").localeCompare(b.name || "");
   });
 
   if (filtered.length === 0) {
@@ -223,16 +227,21 @@ function renderChallengeList() {
     return;
   }
 
+  const excluded = new Set(state.runStatus.excluded_challenges || []);
+
   challengeList.innerHTML = filtered.map(ch => {
     const isStopped = stopped.has(ch.name);
     const isPriority = priority.has(ch.name);
+    const isExcluded = excluded.has(ch.name);
+    const effectiveStatus = isExcluded ? "excluded" : (isStopped ? "stopped" : (ch.status || "pending"));
     const badges = [
       isPriority ? '<span class="ch-badge priority">▲</span>' : "",
+      isExcluded ? '<span class="ch-badge excluded">✕</span>' : "",
       isStopped  ? '<span class="ch-badge stopped">⏹</span>'  : "",
     ].join("");
     return `
-      <div class="challenge-item${state.selectedChallenge === ch.name ? " active" : ""}${isStopped ? " ch-stopped" : ""}" data-name="${escHtml(ch.name)}">
-        <div class="ch-status-dot ${ch.status || "pending"}"></div>
+      <div class="challenge-item${state.selectedChallenge === ch.name ? " active" : ""}${isStopped ? " ch-stopped" : ""}${isExcluded ? " ch-excluded" : ""}" data-name="${escHtml(ch.name)}">
+        <div class="ch-status-dot ${effectiveStatus}"></div>
         <div class="ch-info">
           <div class="ch-name">${escHtml(ch.name)}${badges}</div>
           <div class="ch-meta">${escHtml(ch.category || "")}${ch.flag ? " · " + escHtml(ch.flag) : ""}</div>
@@ -268,8 +277,17 @@ function selectChallenge(name) {
 
 function renderChallengeDetail(ch) {
   detailName.textContent = ch.name;
-  detailStatus.textContent = ch.status || "pending";
-  detailStatus.className = "status-badge " + (ch.status || "pending");
+  // If run controls say it's stopped/excluded, surface that even if the last
+  // backend-emitted status was "running".
+  const name = ch.name;
+  const stoppedSet = new Set(state.runStatus.stopped_challenges || []);
+  const excludedSet = new Set(state.runStatus.excluded_challenges || []);
+  const effectiveStatus = excludedSet.has(name)
+    ? "excluded"
+    : (stoppedSet.has(name) ? "stopped" : (ch.status || "pending"));
+
+  detailStatus.textContent = effectiveStatus;
+  detailStatus.className = "status-badge " + effectiveStatus;
   detailCategory.textContent = ch.category || "";
   detailValue.textContent = ch.value ? ch.value + " pts" : "";
 
@@ -288,13 +306,20 @@ function updateChallengeControlButtons(name) {
   if (!btnChStop || !btnChPriority || !btnChExclude) return;
   const stopped  = new Set(state.runStatus.stopped_challenges || []);
   const priority = new Set(state.runStatus.priority_challenges || []);
+  const excluded = new Set(state.runStatus.excluded_challenges || []);
   const isStopped  = stopped.has(name);
   const isPriority = priority.has(name);
+  const isExcluded = excluded.has(name);
 
   btnChStop.innerHTML     = isStopped  ? '<span class="ctrl-icon">▶</span> Resume'   : '<span class="ctrl-icon">⏹</span> Stop';
   btnChStop.classList.toggle("active", isStopped);
   btnChPriority.innerHTML = isPriority ? '<span class="ctrl-icon">⬆</span> Deprioritize' : '<span class="ctrl-icon">⬆</span> Priority';
   btnChPriority.classList.toggle("active", isPriority);
+
+  btnChExclude.innerHTML = isExcluded
+    ? '<span class="ctrl-icon">↩</span> Unexclude'
+    : '<span class="ctrl-icon">✕</span> Exclude';
+  btnChExclude.classList.toggle("active", isExcluded);
 }
 
 function updateModelsGrid(ch) {
@@ -429,6 +454,11 @@ async function runStart() {
   const maxConcurrent = concurrencySlider ? parseInt(concurrencySlider.value) : 10;
   const noSubmit = noSubmitToggle ? noSubmitToggle.checked : false;
 
+  if (!ctfId) {
+    setStatus("run-msg", "Select a CTF instance first (Manage CTFs)", false);
+    return;
+  }
+
   try {
     const res = await fetch("/api/run/start", {
       method: "POST",
@@ -458,7 +488,8 @@ async function runStop() {
     const res = await fetch("/api/run/stop", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
+      // Force-stop so a stale run from another session/user can be stopped.
+      body: JSON.stringify({ force: true }),
     });
     const data = await res.json();
     setStatus("run-msg", data.ok ? (data.stopped ? "Stopped" : "Not running") : data.error || "Failed", data.ok);
@@ -482,12 +513,22 @@ async function challengeControl(endpoint) {
       // Update local state
       const stopped  = new Set(state.runStatus.stopped_challenges  || []);
       const priority = new Set(state.runStatus.priority_challenges || []);
+      const excluded = new Set(state.runStatus.excluded_challenges || []);
       if (endpoint === "stop") {
         data.stopped ? stopped.add(name) : stopped.delete(name);
         state.runStatus.stopped_challenges = [...stopped];
       } else if (endpoint === "priority") {
         data.priority ? priority.add(name) : priority.delete(name);
         state.runStatus.priority_challenges = [...priority];
+      } else if (endpoint === "exclude") {
+        if (data.excluded) {
+          excluded.add(name);
+          stopped.add(name);
+        } else {
+          excluded.delete(name);
+        }
+        state.runStatus.excluded_challenges = [...excluded];
+        state.runStatus.stopped_challenges = [...stopped];
       }
       updateChallengeControlButtons(name);
       renderChallengeList();
@@ -497,18 +538,14 @@ async function challengeControl(endpoint) {
 
 if (btnChStop)     btnChStop.addEventListener("click",     () => challengeControl("stop"));
 if (btnChPriority) btnChPriority.addEventListener("click", () => challengeControl("priority"));
-if (btnChExclude)  btnChExclude.addEventListener("click",  async () => {
+if (btnChExclude)  btnChExclude.addEventListener("click",  async (e) => {
+  if (e) e.preventDefault();
+  // Avoid moving focus to the operator message textarea when clicking controls.
+  if (e) e.stopPropagation();
   const name = state.selectedChallenge;
   if (!name) return;
   if (!confirm(`Exclude "${name}" from this run? It won't be auto-spawned again.`)) return;
-  // Send as operator message — coordinator respects EXCLUDE_CHALLENGE directive
-  await fetch("/api/message", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message: `EXCLUDE_CHALLENGE: ${name}` }),
-  });
-  // Mark visually as excluded/stopped
-  await challengeControl("stop");
+  await challengeControl("exclude");
 });
 
 // ── Challenge filters ──────────────────────────────────────────────

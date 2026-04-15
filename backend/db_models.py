@@ -63,6 +63,10 @@ class UserSettings(Base):
     claude_cli_path: Mapped[str] = mapped_column(String(500), default="")
     claude_config_dir: Mapped[str] = mapped_column(String(500), default="")
 
+    # Codex CLI subscription config (non-secret)
+    codex_cli_path: Mapped[str] = mapped_column(String(500), default="")
+    codex_config_dir: Mapped[str] = mapped_column(String(500), default="")
+
     # Auto-spawn exclusions (non-secret)
     exclude_challenges: Mapped[str] = mapped_column(Text, default="")
     exclude_challenge_regex: Mapped[str] = mapped_column(String(512), default="")

@@ -155,6 +155,8 @@ async def settings_page(request: Request, db: AsyncSession = Depends(get_db)):
             "ctfd_url": st.ctfd_url or "",
             "claude_cli_path": st.claude_cli_path or "",
             "claude_config_dir": st.claude_config_dir or "",
+            "codex_cli_path": st.codex_cli_path or "",
+            "codex_config_dir": st.codex_config_dir or "",
             "exclude_challenges": st.exclude_challenges or "",
             "exclude_challenge_regex": st.exclude_challenge_regex or "",
             "has_anthropic": bool(st.anthropic_api_key_enc),
@@ -380,6 +382,8 @@ async def api_get_config(user: User = Depends(_require_db_user), db: AsyncSessio
             "ctfd_url": st.ctfd_url,
             "claude_cli_path": st.claude_cli_path,
             "claude_config_dir": st.claude_config_dir,
+            "codex_cli_path": st.codex_cli_path,
+            "codex_config_dir": st.codex_config_dir,
             "exclude_challenges": st.exclude_challenges,
             "exclude_challenge_regex": st.exclude_challenge_regex,
             "has_anthropic_key": bool(st.anthropic_api_key_enc),
@@ -409,6 +413,10 @@ async def api_config(
             st.claude_cli_path = (body["claude_cli_path"] or "").strip()
         if "claude_config_dir" in body:
             st.claude_config_dir = (body["claude_config_dir"] or "").strip()
+        if "codex_cli_path" in body:
+            st.codex_cli_path = (body["codex_cli_path"] or "").strip()
+        if "codex_config_dir" in body:
+            st.codex_config_dir = (body["codex_config_dir"] or "").strip()
         if "exclude_challenges" in body:
             st.exclude_challenges = body["exclude_challenges"] or ""
         if "exclude_challenge_regex" in body:
@@ -678,6 +686,8 @@ async def api_run_start(
             settings.gemini_api_key = open_opt(st.gemini_api_key_enc) or ""
             settings.claude_cli_path = st.claude_cli_path or ""
             settings.claude_config_dir = st.claude_config_dir or ""
+            settings.codex_cli_path = st.codex_cli_path or ""
+            settings.codex_config_dir = st.codex_config_dir or ""
 
         max_concurrent = int(body.get("max_concurrent_challenges") or 10)
         settings.max_concurrent_challenges = max_concurrent
@@ -953,42 +963,81 @@ async def api_claude_auth_check(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _user_codex_config_dir(user_id: int) -> str:
+    return os.path.join(_CODEX_CTF_CONFIG_ROOT, str(user_id))
+
+
+def _codex_is_authenticated(config_dir: str) -> bool:
+    """Return True if codex credentials exist in *config_dir* (used as HOME)."""
+    candidates = [
+        os.path.join(config_dir, ".config", "openai", "credentials.json"),
+        os.path.join(config_dir, ".config", "openai", "auth.json"),
+        os.path.join(config_dir, ".openai", "credentials.json"),
+        os.path.join(config_dir, ".openai", "auth.json"),
+        os.path.join(config_dir, ".config", "openai"),  # non-empty dir counts
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            if os.path.isdir(path):
+                try:
+                    if any(True for _ in os.scandir(path)):
+                        return True
+                except Exception:
+                    pass
+            else:
+                try:
+                    with open(path) as f:
+                        data = _json.load(f)
+                    if data:
+                        return True
+                except Exception:
+                    pass
+    return False
+
+
 @app.post("/api/auth/codex/start")
 async def api_codex_auth_start(
     request: Request,
     user: User = Depends(_require_db_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Begin Codex / OpenAI CLI sign-in.
+    """Begin Codex CLI subscription sign-in.
 
-    Tries `codex auth login` (or `codex login`) to get an OAuth URL.
-    Falls back to instructions for entering an OpenAI API key directly.
+    Uses a per-user HOME directory so each user's OAuth tokens are isolated.
+    Tries `codex auth login` / `codex login` to capture an OAuth URL.
+    Falls back to manual instructions.
     """
     st = await db.get(UserSettings, user.id)
 
-    # If user already has an API key stored, report authenticated
-    try:
-        api_key = open_opt(st.openai_api_key_enc) if st and st.openai_api_key_enc else ""
-    except Exception:
-        api_key = ""
-    if api_key:
-        return JSONResponse({"ok": True, "status": "authenticated"})
+    config_dir = (st.codex_config_dir if st else "") or _user_codex_config_dir(user.id)
+    codex_bin = (st.codex_cli_path if st else "") or shutil.which("codex") or "codex"
 
-    codex_bin = shutil.which("codex")
-    if not codex_bin:
+    os.makedirs(config_dir, exist_ok=True)
+
+    if _codex_is_authenticated(config_dir):
+        return JSONResponse({"ok": True, "status": "authenticated", "config_dir": config_dir})
+
+    if not shutil.which(codex_bin) and not os.path.isfile(codex_bin):
         return JSONResponse(
             {
                 "ok": False,
                 "error": "Codex CLI not found on this server.",
                 "hint": "Install Codex: npm install -g @openai/codex",
-                "alt": "Or paste your OpenAI API key in the field above.",
+                "alt": "Or paste your OpenAI API key in the API key field above.",
             },
             status_code=404,
         )
 
-    env = {**os.environ, "DISPLAY": "", "BROWSER": "echo", "NO_COLOR": "1"}
+    env = {
+        **os.environ,
+        "HOME": config_dir,
+        "DISPLAY": "",
+        "BROWSER": "echo",
+        "NO_COLOR": "1",
+        "CODEX_DISABLE_TELEMETRY": "1",
+    }
+    env.pop("OPENAI_API_KEY", None)  # force subscription, not API key
 
-    # Try common codex auth subcommands
     for subcmd in (["auth", "login"], ["login"], ["auth"]):
         try:
             urls, _ = await _capture_cli_auth_url([codex_bin, *subcmd], env=env, timeout=10.0)
@@ -997,21 +1046,24 @@ async def api_codex_auth_start(
 
         auth_urls = [
             u for u in urls
-            if any(d in u for d in ("openai.com", "auth0.com", "platform.openai"))
+            if any(d in u for d in ("openai.com", "auth0.com", "chatgpt.com"))
         ]
         if not auth_urls:
-            auth_urls = urls
+            auth_urls = [u for u in urls if u]
         if auth_urls:
             return JSONResponse(
-                {"ok": True, "status": "pending", "auth_url": auth_urls[0]}
+                {"ok": True, "status": "pending", "auth_url": auth_urls[0], "config_dir": config_dir}
             )
+
+    if _codex_is_authenticated(config_dir):
+        return JSONResponse({"ok": True, "status": "authenticated", "config_dir": config_dir})
 
     return JSONResponse(
         {
             "ok": True,
             "status": "manual",
-            "message": "Could not get auth URL from codex CLI. Enter your OpenAI API key instead.",
-            "api_key_url": "https://platform.openai.com/api-keys",
+            "config_dir": config_dir,
+            "message": "Could not get auth URL automatically. Follow the manual steps below.",
         }
     )
 
@@ -1021,14 +1073,20 @@ async def api_codex_auth_check(
     user: User = Depends(_require_db_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Check whether Codex / OpenAI auth is complete for this user."""
+    """Poll whether Codex CLI subscription auth has completed for this user."""
     st = await db.get(UserSettings, user.id)
-    try:
-        api_key = open_opt(st.openai_api_key_enc) if st and st.openai_api_key_enc else ""
-    except Exception:
-        api_key = ""
-    if api_key:
-        return JSONResponse({"ok": True, "status": "authenticated"})
+    config_dir = (st.codex_config_dir if st else "") or _user_codex_config_dir(user.id)
+
+    if _codex_is_authenticated(config_dir):
+        if not (st and st.codex_config_dir):
+            if not st:
+                st = UserSettings(user_id=user.id)
+                db.add(st)
+            st.codex_config_dir = config_dir
+            st.updated_at = datetime.now(timezone.utc)
+            await db.commit()
+        return JSONResponse({"ok": True, "status": "authenticated", "config_dir": config_dir})
+
     return JSONResponse({"ok": True, "status": "pending"})
 
 

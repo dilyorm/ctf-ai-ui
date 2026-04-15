@@ -220,12 +220,24 @@ class CodexSolver:
             has_named_tools=True,
         )
 
+        codex_bin = getattr(self.settings, "codex_cli_path", "") or "codex"
+        codex_config_dir = getattr(self.settings, "codex_config_dir", "") or ""
+        codex_env: dict[str, str] | None = None
+        if codex_config_dir:
+            # Subscription mode: isolate per-user credentials by overriding HOME
+            # so `codex app-server` reads tokens stored by `codex auth login`.
+            import os as _os
+            codex_env = {**_os.environ, "HOME": codex_config_dir}
+            codex_env.pop("OPENAI_API_KEY", None)   # force subscription, not API key
+            codex_env["CODEX_DISABLE_TELEMETRY"] = "1"
+
         self._proc = await asyncio.create_subprocess_exec(
-            "codex",
+            codex_bin,
             "app-server",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
+            **({"env": codex_env} if codex_env else {}),
         )
 
         self._reader_task = asyncio.create_task(self._read_loop())

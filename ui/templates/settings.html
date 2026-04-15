@@ -88,15 +88,15 @@
           </div>
         </div>
 
-        <!-- OpenAI / Codex -->
+        <!-- OpenAI API key -->
         <div class="settings-card">
           <div class="settings-card-header">
             <div class="provider-icon provider-openai">O</div>
             <div>
-              <h3>OpenAI / Codex</h3>
-              <p class="hint">Used for <code>codex/*</code> models (GPT-5.x). Paste your API key or sign in via the Codex CLI.</p>
+              <h3>OpenAI API Key</h3>
+              <p class="hint">Used for <code>codex/*</code> API-key models (GPT-5.x). Not needed when using Codex Subscription below.</p>
             </div>
-            {% if cfg.has_openai %}<span class="key-status connected" id="codex-status-badge">Connected</span>{% else %}<span class="key-status" id="codex-status-badge">Not set</span>{% endif %}
+            {% if cfg.has_openai %}<span class="key-status connected">Connected</span>{% else %}<span class="key-status">Not set</span>{% endif %}
           </div>
           <div class="settings-card-body">
             <div class="form-group">
@@ -104,7 +104,45 @@
               <input type="password" id="cfg-openai" placeholder="sk-••••••••" autocomplete="new-password" />
               <span class="field-hint">Leave blank to keep existing key. <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener" style="color:var(--accent)">Get a key &rarr;</a></span>
             </div>
-            <button class="btn btn-sm" id="btn-codex-signin" onclick="startCodexAuth()">Sign in with Codex CLI</button>
+          </div>
+        </div>
+
+        <!-- Codex Subscription -->
+        <div class="settings-card">
+          <div class="settings-card-header">
+            <div class="provider-icon provider-openai" style="background:#0f766e;">C</div>
+            <div>
+              <h3>Codex Subscription (ChatGPT account)</h3>
+              <p class="hint">Used for <code>codex/o3</code>, <code>codex/o4-mini</code>, <code>codex/gpt-4.1</code> — no API key needed.</p>
+            </div>
+            <span class="key-status {% if cfg.codex_config_dir %}connected{% endif %}" id="codex-sub-status-badge">
+              {% if cfg.codex_config_dir %}Connected{% else %}Not connected{% endif %}
+            </span>
+          </div>
+          <div class="settings-card-body">
+            <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px;">
+              <button class="btn btn-primary" onclick="startCodexAuth()">Sign in with Codex CLI</button>
+              <span id="codex-signin-hint" style="font-size:12px;color:var(--text3);">
+                {% if cfg.codex_config_dir %}
+                  Signed in. Config dir: <code>{{ cfg.codex_config_dir }}</code>
+                {% else %}
+                  Authenticate with your ChatGPT / OpenAI account.
+                {% endif %}
+              </span>
+            </div>
+            <details style="margin-top:4px;">
+              <summary style="font-size:12px;color:var(--text3);cursor:pointer;user-select:none;">Advanced: override paths</summary>
+              <div class="two-col" style="display:grid;grid-template-columns:1fr 1fr;gap:0 16px;margin-top:10px;">
+                <div class="form-group">
+                  <label>Codex CLI Path <span class="optional">(optional)</span></label>
+                  <input type="text" id="cfg-codex-cli-path" placeholder="/usr/local/bin/codex" value="{{ cfg.codex_cli_path or '' }}" />
+                </div>
+                <div class="form-group">
+                  <label>Codex Config Dir <span class="optional">(optional)</span></label>
+                  <input type="text" id="cfg-codex-config-dir" placeholder="/home/user/.codex-home" value="{{ cfg.codex_config_dir or '' }}" />
+                </div>
+              </div>
+            </details>
           </div>
         </div>
 
@@ -332,13 +370,15 @@
   document.getElementById("btn-save-connections").addEventListener("click", async () => {
     const body = {};
     const map = [
-      ["cfg-ctfd-url",       "ctfd_url"],
-      ["cfg-ctfd-token",     "ctfd_token"],
-      ["cfg-anthropic",      "anthropic_api_key"],
-      ["cfg-openai",         "openai_api_key"],
-      ["cfg-gemini",         "gemini_api_key"],
-      ["cfg-claude-cli-path","claude_cli_path"],
-      ["cfg-claude-config-dir","claude_config_dir"],
+      ["cfg-ctfd-url",          "ctfd_url"],
+      ["cfg-ctfd-token",        "ctfd_token"],
+      ["cfg-anthropic",         "anthropic_api_key"],
+      ["cfg-openai",            "openai_api_key"],
+      ["cfg-gemini",            "gemini_api_key"],
+      ["cfg-claude-cli-path",   "claude_cli_path"],
+      ["cfg-claude-config-dir", "claude_config_dir"],
+      ["cfg-codex-cli-path",    "codex_cli_path"],
+      ["cfg-codex-config-dir",  "codex_config_dir"],
     ];
     map.forEach(([id, key]) => {
       const v = (document.getElementById(id) || {}).value?.trim();
@@ -421,9 +461,14 @@
     if (configDir) postJSON("/api/config", { claude_config_dir: configDir }).catch(() => {});
   }
 
-  function _setCodexConnected() {
-    const badge = document.getElementById("codex-status-badge");
+  function _setCodexConnected(configDir) {
+    const badge = document.getElementById("codex-sub-status-badge");
     if (badge) { badge.textContent = "Connected"; badge.className = "key-status connected"; }
+    const hint = document.getElementById("codex-signin-hint");
+    if (hint) hint.innerHTML = `Signed in. Config dir: <code>${configDir || ""}</code>`;
+    const inp = document.getElementById("cfg-codex-config-dir");
+    if (inp && configDir) inp.value = configDir;
+    if (configDir) postJSON("/api/config", { codex_config_dir: configDir }).catch(() => {});
   }
 
   function _copyToClipboard(text) {
@@ -554,7 +599,7 @@
     }
   }
 
-  // ── Codex sign-in flow ─────────────────────────────────────────────
+  // ── Codex subscription sign-in flow ───────────────────────────────
   async function startCodexAuth() {
     openAuthModal("Sign in with Codex CLI", `<div class="auth-loading"><span class="spinner"></span> Contacting Codex CLI…</div>`);
 
@@ -573,43 +618,107 @@
           <p style="color:var(--red)">${data.error || "Unknown error"}</p>
           ${data.hint ? `<p>${data.hint}</p>` : ""}
           ${data.alt ? `<p>${data.alt}</p>` : ""}
-          <p>You can also <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener" style="color:var(--accent)">get an OpenAI API key</a> and paste it in the API Key field.</p>
+          <p>Alternatively, use an <strong>OpenAI API key</strong> in the field above — no CLI needed.</p>
+          <div style="margin-top:8px;"><button class="btn btn-sm" onclick="closeAuthModal()">Close</button></div>
         </div>`);
       return;
     }
 
     if (data.status === "authenticated") {
-      _setCodexConnected();
-      openAuthModal("Codex Connected", `<div class="auth-step"><p style="color:var(--green)">✓ Already authenticated.</p></div>`);
+      _setCodexConnected(data.config_dir);
+      openAuthModal("Codex Connected", `
+        <div class="auth-step">
+          <p style="color:var(--green)">✓ Codex CLI is already authenticated.</p>
+          ${data.config_dir ? `<p>Config dir: <code>${data.config_dir}</code></p>` : ""}
+        </div>`);
       setTimeout(closeAuthModal, 2000);
       return;
     }
 
     if (data.auth_url) {
-      openAuthModal("Sign in with Codex", `
-        <div class="auth-step">
-          <p>Open this link in your browser to sign in to OpenAI:</p>
-          <div class="auth-url-box"><a href="${data.auth_url}" target="_blank" rel="noopener">${data.auth_url}</a></div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap;">
-            <a href="${data.auth_url}" target="_blank" rel="noopener" class="btn btn-primary btn-sm">Open in browser</a>
-            <button class="btn btn-sm" onclick="_copyToClipboard('${data.auth_url.replace(/'/g,"\\'")}')">Copy link</button>
-          </div>
-          <p style="font-size:12px;color:var(--text3);">After signing in, the Codex CLI will save your credentials. Close this dialog and save your API key if prompted.</p>
-          <div class="auth-verify-row">
-            <button class="btn btn-sm" onclick="closeAuthModal()">Done</button>
-          </div>
-        </div>`);
+      _showCodexAuthUrl(data.auth_url, data.config_dir);
+      _startCodexPoll(data.config_dir);
       return;
     }
 
     // Manual fallback
-    openAuthModal("Codex: Enter API Key", `
+    _showCodexManual(data.config_dir, data.message || "");
+  }
+
+  function _showCodexAuthUrl(url, configDir) {
+    openAuthModal("Sign in with Codex", `
       <div class="auth-step">
-        <p>${data.message || "Please enter your OpenAI API key directly."}</p>
-        <p><a href="${data.api_key_url || 'https://platform.openai.com/api-keys'}" target="_blank" rel="noopener" style="color:var(--accent)">Get your OpenAI API key &rarr;</a></p>
-        <p style="font-size:12px;color:var(--text3);">Paste it into the <strong>OpenAI API Key</strong> field in settings and click <strong>Save Connections</strong>.</p>
-        <div style="margin-top:8px;"><button class="btn btn-sm" onclick="closeAuthModal()">Close</button></div>
+        <p>Open this link in your browser to sign in to your OpenAI / ChatGPT account:</p>
+        <div class="auth-url-box"><a href="${url}" target="_blank" rel="noopener">${url}</a></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <a href="${url}" target="_blank" rel="noopener" class="btn btn-primary btn-sm">Open in browser</a>
+          <button class="btn btn-sm" onclick="_copyToClipboard('${url.replace(/'/g,"\\'")}')">Copy link</button>
+        </div>
+        <p style="font-size:12px;color:var(--text3);">After approving in the browser, click <strong>Verify</strong> below.</p>
+        <div class="auth-verify-row">
+          <button class="btn btn-sm" id="codex-verify-btn" onclick="verifyCodexAuth('${(configDir||"").replace(/'/g,"\\'")}')">Verify connection</button>
+          <span class="auth-verify-msg" id="codex-verify-msg"></span>
+        </div>
+        ${configDir ? `<details><summary style="font-size:11px;color:var(--text3);cursor:pointer;">Technical details</summary><p style="font-size:11px;color:var(--text3);margin-top:4px;">Config dir (HOME): <code>${configDir}</code></p></details>` : ""}
       </div>`);
+  }
+
+  function _showCodexManual(configDir, msg) {
+    openAuthModal("Manual Codex Setup", `
+      <div class="auth-step">
+        <p>${msg || "The auth URL could not be captured automatically."}</p>
+        <ol>
+          <li>SSH into this server.</li>
+          <li>Run: <code>HOME=${configDir || "~/.codex-home"} codex auth login</code></li>
+          <li>Complete sign-in in the terminal.</li>
+          <li>Return here and click <strong>Verify connection</strong>.</li>
+        </ol>
+        <div class="auth-verify-row">
+          <button class="btn btn-sm" id="codex-verify-btn" onclick="verifyCodexAuth('${(configDir||"").replace(/'/g,"\\'")}')">Verify connection</button>
+          <span class="auth-verify-msg" id="codex-verify-msg"></span>
+        </div>
+      </div>`);
+    _startCodexPoll(configDir);
+  }
+
+  function _startCodexPoll(configDir) {
+    if (_pollTimer) clearInterval(_pollTimer);
+    _pollTimer = setInterval(async () => {
+      try {
+        const res = await fetch("/api/auth/codex/check");
+        const d = await res.json();
+        if (d.status === "authenticated") {
+          clearInterval(_pollTimer); _pollTimer = null;
+          _setCodexConnected(d.config_dir || configDir);
+          const msg = document.getElementById("codex-verify-msg");
+          if (msg) { msg.textContent = "Connected!"; msg.className = "auth-verify-msg ok"; }
+          setTimeout(closeAuthModal, 1800);
+        }
+      } catch { /* ignore */ }
+    }, 3000);
+  }
+
+  async function verifyCodexAuth(configDir) {
+    const btn = document.getElementById("codex-verify-btn");
+    const msg = document.getElementById("codex-verify-msg");
+    if (btn) btn.disabled = true;
+    if (msg) { msg.textContent = "Checking…"; msg.className = "auth-verify-msg"; }
+
+    try {
+      const res = await fetch("/api/auth/codex/check");
+      const d = await res.json();
+      if (d.status === "authenticated") {
+        _setCodexConnected(d.config_dir || configDir);
+        if (msg) { msg.textContent = "Connected!"; msg.className = "auth-verify-msg ok"; }
+        setTimeout(closeAuthModal, 1800);
+      } else {
+        if (msg) { msg.textContent = "Not authenticated yet — complete sign-in and try again."; msg.className = "auth-verify-msg err"; }
+        if (btn) btn.disabled = false;
+      }
+    } catch {
+      if (msg) { msg.textContent = "Network error"; msg.className = "auth-verify-msg err"; }
+      if (btn) btn.disabled = false;
+    }
   }
   </script>
 </body>

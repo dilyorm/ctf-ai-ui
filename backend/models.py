@@ -32,10 +32,15 @@ ALL_MODELS: list[dict] = [
     {"spec": "claude-sdk/claude-opus-4-6/low",    "label": "Claude Opus 4.6 · Low effort",    "provider": "claude", "provider_label": "Claude Subscription"},
     {"spec": "claude-sdk/claude-opus-4-6/medium",  "label": "Claude Opus 4.6 · Medium effort", "provider": "claude", "provider_label": "Claude Subscription"},
     {"spec": "claude-sdk/claude-opus-4-6/max",     "label": "Claude Opus 4.6 · Max effort",    "provider": "claude", "provider_label": "Claude Subscription"},
-    # ── Codex / OpenAI ─────────────────────────────────────────────────────────
-    {"spec": "codex/gpt-5.4",       "label": "GPT-5.4",         "provider": "openai", "provider_label": "OpenAI / Codex"},
-    {"spec": "codex/gpt-5.4-mini",  "label": "GPT-5.4 Mini",    "provider": "openai", "provider_label": "OpenAI / Codex"},
-    {"spec": "codex/gpt-5.3-codex", "label": "GPT-5.3 Codex",   "provider": "openai", "provider_label": "OpenAI / Codex"},
+    # ── Codex API (OPENAI_API_KEY) ─────────────────────────────────────────────
+    {"spec": "codex/gpt-5.4",       "label": "GPT-5.4",         "provider": "openai", "provider_label": "OpenAI / Codex (API key)"},
+    {"spec": "codex/gpt-5.4-mini",  "label": "GPT-5.4 Mini",    "provider": "openai", "provider_label": "OpenAI / Codex (API key)"},
+    {"spec": "codex/gpt-5.3-codex", "label": "GPT-5.3 Codex",   "provider": "openai", "provider_label": "OpenAI / Codex (API key)"},
+    # ── Codex subscription (ChatGPT account auth via `codex auth login`) ───────
+    {"spec": "codex/o3",            "label": "o3",               "provider": "codex-sub", "provider_label": "OpenAI / Codex (Subscription)"},
+    {"spec": "codex/o4-mini",       "label": "o4-mini",          "provider": "codex-sub", "provider_label": "OpenAI / Codex (Subscription)"},
+    {"spec": "codex/gpt-4.1",       "label": "GPT-4.1",          "provider": "codex-sub", "provider_label": "OpenAI / Codex (Subscription)"},
+    {"spec": "codex/gpt-4.1-mini",  "label": "GPT-4.1 Mini",     "provider": "codex-sub", "provider_label": "OpenAI / Codex (Subscription)"},
     # ── Google ─────────────────────────────────────────────────────────────────
     {"spec": "google/gemini-3-flash-preview", "label": "Gemini 3 Flash Preview", "provider": "google", "provider_label": "Google AI"},
     # ── Bedrock ────────────────────────────────────────────────────────────────

@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CTFs · CTF Agent</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body class="page-body">
+
+  <!-- ── Nav ──────────────────────────────────────────────────────────── -->
+  <nav class="topnav">
+    <div class="topnav-brand">
+      <span class="brand-icon">⚡</span>
+      <span class="brand-name">CTF Agent</span>
+    </div>
+    <div class="topnav-links">
+      <a href="/" class="nav-link">Dashboard</a>
+      <a href="/ctfs" class="nav-link active">CTFs</a>
+      <a href="/settings" class="nav-link">Settings</a>
+    </div>
+    <div class="topnav-user">
+      <span class="nav-email">{{ user.email or user.login }}</span>
+      <a href="/auth/logout" class="btn btn-sm btn-ghost">Logout</a>
+    </div>
+  </nav>
+
+  <!-- ── Page ──────────────────────────────────────────────────────────── -->
+  <div class="page-container">
+    <div class="page-header">
+      <div>
+        <h1 class="page-title">My CTFs</h1>
+        <p class="page-desc">Manage your CTFd instances. Select one to start solving.</p>
+      </div>
+      <button class="btn btn-primary" id="btn-new-ctf">+ New CTF</button>
+    </div>
+
+    <!-- CTF grid -->
+    {% if ctfs %}
+    <div class="ctf-grid" id="ctf-grid">
+      {% for ctf in ctfs %}
+      <div class="ctf-card" data-id="{{ ctf.id }}">
+        <div class="ctf-card-header">
+          <span class="ctf-icon">🏁</span>
+          <div class="ctf-card-meta">
+            <h3 class="ctf-card-name">{{ ctf.name }}</h3>
+            <span class="ctf-card-date">Added {{ ctf.created_at }}</span>
+          </div>
+        </div>
+        <div class="ctf-card-url">
+          <a href="{{ ctf.ctfd_url }}" target="_blank" rel="noopener">{{ ctf.ctfd_url }}</a>
+        </div>
+        <div class="ctf-card-actions">
+          <a href="/?ctf_id={{ ctf.id }}" class="btn btn-primary btn-sm">Start Solving</a>
+          <button class="btn btn-sm btn-danger btn-delete-ctf" data-id="{{ ctf.id }}" data-name="{{ ctf.name }}">Delete</button>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-page-state">
+      <div class="empty-page-icon">🏁</div>
+      <h2>No CTFs yet</h2>
+      <p>Add your first CTFd instance to start solving challenges.</p>
+      <button class="btn btn-primary" id="btn-new-ctf-empty">+ New CTF</button>
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- ── New CTF Modal ─────────────────────────────────────────────────── -->
+  <div class="modal-overlay" id="new-ctf-modal" style="display:none">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>Add CTF Instance</h3>
+        <button class="modal-close" id="modal-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label>CTF Name <span class="required">*</span></label>
+          <input type="text" id="new-ctf-name" placeholder="e.g. PicoCTF 2025" />
+        </div>
+        <div class="form-group">
+          <label>CTFd URL <span class="required">*</span></label>
+          <input type="url" id="new-ctf-url" placeholder="https://ctf.example.com" />
+        </div>
+        <div class="form-group">
+          <label>CTFd API Token</label>
+          <input type="password" id="new-ctf-token" placeholder="ctfd_your_token_here" autocomplete="new-password" />
+          <span class="field-hint">Generate from CTFd Settings → Access Tokens.</span>
+        </div>
+        <div id="new-ctf-error" class="form-error" style="display:none"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="btn-cancel-new-ctf">Cancel</button>
+        <button class="btn btn-primary" id="btn-save-new-ctf">Add CTF</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+  "use strict";
+
+  const modal = document.getElementById("new-ctf-modal");
+  const errBox = document.getElementById("new-ctf-error");
+
+  function openModal() { modal.style.display = "flex"; }
+  function closeModal() {
+    modal.style.display = "none";
+    errBox.style.display = "none";
+    document.getElementById("new-ctf-name").value = "";
+    document.getElementById("new-ctf-url").value = "";
+    document.getElementById("new-ctf-token").value = "";
+  }
+
+  document.getElementById("btn-new-ctf")?.addEventListener("click", openModal);
+  document.getElementById("btn-new-ctf-empty")?.addEventListener("click", openModal);
+  document.getElementById("modal-close").addEventListener("click", closeModal);
+  document.getElementById("btn-cancel-new-ctf").addEventListener("click", closeModal);
+  modal.addEventListener("click", e => { if (e.target === modal) closeModal(); });
+
+  document.getElementById("btn-save-new-ctf").addEventListener("click", async () => {
+    const name = document.getElementById("new-ctf-name").value.trim();
+    const url = document.getElementById("new-ctf-url").value.trim();
+    const token = document.getElementById("new-ctf-token").value.trim();
+    if (!name || !url) {
+      errBox.textContent = "Name and URL are required.";
+      errBox.style.display = "block";
+      return;
+    }
+    const btn = document.getElementById("btn-save-new-ctf");
+    btn.disabled = true;
+    btn.textContent = "Saving…";
+    try {
+      const res = await fetch("/api/ctfs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, ctfd_url: url, ctfd_token: token }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        location.reload();
+      } else {
+        errBox.textContent = data.error || "Failed to create CTF.";
+        errBox.style.display = "block";
+      }
+    } catch {
+      errBox.textContent = "Network error.";
+      errBox.style.display = "block";
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Add CTF";
+    }
+  });
+
+  // Delete CTF
+  document.querySelectorAll(".btn-delete-ctf").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const id = btn.dataset.id;
+      const name = btn.dataset.name;
+      if (!confirm(`Delete "${name}"? This cannot be undone.`)) return;
+      try {
+        const res = await fetch(`/api/ctfs/${id}`, { method: "DELETE" });
+        const data = await res.json();
+        if (data.ok) {
+          btn.closest(".ctf-card").remove();
+          if (!document.querySelector(".ctf-card")) location.reload();
+        } else {
+          alert(data.error || "Delete failed.");
+        }
+      } catch {
+        alert("Network error.");
+      }
+    });
+  });
+  </script>
+</body>
+</html>

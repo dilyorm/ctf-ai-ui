@@ -124,7 +124,7 @@ class CTF(Base):
 
     name: Mapped[str] = mapped_column(String(200))
     ctfd_url: Mapped[str] = mapped_column(String(500))
-    ctfd_token_enc: Mapped[bytes] = mapped_column(LargeBinary)
+    ctfd_token_enc: Mapped[bytes] = mapped_column(LargeBinary, default=b"")
 
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc)

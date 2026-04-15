@@ -25,6 +25,10 @@ class GlobalRunManager:
         self._started_at: dt.datetime | None = None
         self._last_result: dict | None = None
         self._last_error: str | None = None
+        self._max_concurrent: int = 10
+        # Per-challenge runtime controls (names are challenge slugs/display names)
+        self.stopped_challenges: set[str] = set()
+        self.priority_challenges: set[str] = set()
 
     def status(self) -> dict:
         t = self._task
@@ -35,7 +39,30 @@ class GlobalRunManager:
             "started_at": self._started_at.isoformat() if self._started_at else None,
             "last_result": self._last_result,
             "last_error": self._last_error,
+            "max_concurrent": self._max_concurrent,
+            "stopped_challenges": sorted(self.stopped_challenges),
+            "priority_challenges": sorted(self.priority_challenges),
         }
+
+    def stop_challenge(self, name: str) -> dict:
+        """Toggle stopped state for a specific challenge."""
+        if name in self.stopped_challenges:
+            self.stopped_challenges.discard(name)
+            return {"ok": True, "stopped": False, "name": name}
+        self.stopped_challenges.add(name)
+        return {"ok": True, "stopped": True, "name": name}
+
+    def toggle_priority(self, name: str) -> dict:
+        """Toggle high-priority flag for a specific challenge."""
+        if name in self.priority_challenges:
+            self.priority_challenges.discard(name)
+            return {"ok": True, "priority": False, "name": name}
+        self.priority_challenges.add(name)
+        return {"ok": True, "priority": True, "name": name}
+
+    def set_max_concurrent(self, n: int) -> dict:
+        self._max_concurrent = max(1, min(n, 50))
+        return {"ok": True, "max_concurrent": self._max_concurrent}
 
     async def start(
         self,
@@ -59,6 +86,8 @@ class GlobalRunManager:
             self._started_at = dt.datetime.now(dt.timezone.utc)
             self._last_result = None
             self._last_error = None
+            self.stopped_challenges = set()
+            self.priority_challenges = set()
 
             async def _runner() -> None:
                 try:

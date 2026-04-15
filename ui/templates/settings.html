@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Settings · CTF Agent</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body class="page-body">
+
+  <!-- ── Nav ──────────────────────────────────────────────────────────── -->
+  <nav class="topnav">
+    <div class="topnav-brand">
+      <span class="brand-icon">⚡</span>
+      <span class="brand-name">CTF Agent</span>
+    </div>
+    <div class="topnav-links">
+      <a href="/" class="nav-link">Dashboard</a>
+      <a href="/ctfs" class="nav-link">CTFs</a>
+      <a href="/settings" class="nav-link active">Settings</a>
+    </div>
+    <div class="topnav-user">
+      <span class="nav-email">{{ user.email or user.login }}</span>
+      <a href="/auth/logout" class="btn btn-sm btn-ghost">Logout</a>
+    </div>
+  </nav>
+
+  <!-- ── Page ──────────────────────────────────────────────────────────── -->
+  <div class="page-container">
+    <div class="page-header">
+      <h1 class="page-title">Settings</h1>
+      <p class="page-desc">Configure API keys, model selection, and solving preferences.</p>
+    </div>
+
+    {% if saved %}
+    <div class="alert alert-success">Settings saved successfully.</div>
+    {% endif %}
+
+    <!-- Tabs -->
+    <div class="tabs" id="settings-tabs">
+      <button class="tab-btn active" data-tab="connections">Connections</button>
+      <button class="tab-btn" data-tab="models">Model Selection</button>
+      <button class="tab-btn" data-tab="advanced">Advanced</button>
+    </div>
+
+    <!-- ── Tab: Connections ──────────────────────────────────────────── -->
+    <div class="tab-panel active" id="tab-connections">
+      <div class="settings-grid">
+
+        <!-- CTFd -->
+        <div class="settings-card">
+          <div class="settings-card-header">
+            <div class="provider-icon provider-ctfd">C</div>
+            <div>
+              <h3>CTFd Connection</h3>
+              <p class="hint">Default CTFd instance used when starting runs without a specific CTF selected.</p>
+            </div>
+          </div>
+          <div class="settings-card-body">
+            <div class="form-group">
+              <label>CTFd URL</label>
+              <input type="url" id="cfg-ctfd-url" placeholder="https://ctf.example.com" value="{{ cfg.ctfd_url or '' }}" />
+            </div>
+            <div class="form-group">
+              <label>CTFd API Token</label>
+              <input type="password" id="cfg-ctfd-token" placeholder="ctfd_••••••••" autocomplete="new-password" />
+              <span class="field-hint">Leave blank to keep existing token.</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Anthropic API -->
+        <div class="settings-card">
+          <div class="settings-card-header">
+            <div class="provider-icon provider-anthropic">A</div>
+            <div>
+              <h3>Anthropic API Key</h3>
+              <p class="hint">Used for <code>bedrock/*</code> models and direct API access.</p>
+            </div>
+            {% if cfg.has_anthropic %}<span class="key-status connected">Connected</span>{% else %}<span class="key-status">Not set</span>{% endif %}
+          </div>
+          <div class="settings-card-body">
+            <div class="form-group">
+              <label>API Key</label>
+              <input type="password" id="cfg-anthropic" placeholder="sk-ant-••••••••" autocomplete="new-password" />
+              <span class="field-hint">Leave blank to keep existing key.</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- OpenAI / Codex -->
+        <div class="settings-card">
+          <div class="settings-card-header">
+            <div class="provider-icon provider-openai">O</div>
+            <div>
+              <h3>OpenAI API Key</h3>
+              <p class="hint">Used for <code>codex/*</code> models (GPT-5.x).</p>
+            </div>
+            {% if cfg.has_openai %}<span class="key-status connected">Connected</span>{% else %}<span class="key-status">Not set</span>{% endif %}
+          </div>
+          <div class="settings-card-body">
+            <div class="form-group">
+              <label>API Key</label>
+              <input type="password" id="cfg-openai" placeholder="sk-••••••••" autocomplete="new-password" />
+              <span class="field-hint">Leave blank to keep existing key.</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Google Gemini -->
+        <div class="settings-card">
+          <div class="settings-card-header">
+            <div class="provider-icon provider-google">G</div>
+            <div>
+              <h3>Google AI (Gemini) API Key</h3>
+              <p class="hint">Used for <code>google/gemini-*</code> models.</p>
+            </div>
+            {% if cfg.has_gemini %}<span class="key-status connected">Connected</span>{% else %}<span class="key-status">Not set</span>{% endif %}
+          </div>
+          <div class="settings-card-body">
+            <div class="form-group">
+              <label>API Key</label>
+              <input type="password" id="cfg-gemini" placeholder="AIza••••••••" autocomplete="new-password" />
+              <span class="field-hint">Leave blank to keep existing key.</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Claude Subscription -->
+        <div class="settings-card span-2">
+          <div class="settings-card-header">
+            <div class="provider-icon provider-claude">♦</div>
+            <div>
+              <h3>Claude Subscription (Claude Code CLI)</h3>
+              <p class="hint">Used for <code>claude-sdk/*</code> models. Auth comes from your local Claude Code CLI session — no API key needed.</p>
+            </div>
+          </div>
+          <div class="settings-card-body two-col">
+            <div class="form-group">
+              <label>Claude CLI Path <span class="optional">(optional)</span></label>
+              <input type="text" id="cfg-claude-cli-path" placeholder="/usr/local/bin/claude" value="{{ cfg.claude_cli_path or '' }}" />
+            </div>
+            <div class="form-group">
+              <label>Claude Config Dir <span class="optional">(optional)</span></label>
+              <input type="text" id="cfg-claude-config-dir" placeholder="/root/.claude" value="{{ cfg.claude_config_dir or '' }}" />
+            </div>
+          </div>
+        </div>
+
+      </div><!-- /settings-grid -->
+
+      <div class="settings-footer">
+        <button class="btn btn-primary" id="btn-save-connections">Save Connections</button>
+        <span class="save-status" id="connections-status"></span>
+      </div>
+    </div><!-- /tab-connections -->
+
+    <!-- ── Tab: Models ───────────────────────────────────────────────── -->
+    <div class="tab-panel" id="tab-models">
+      <p class="tab-desc">Select which models the solver swarm will use. Models from unconfigured providers are shown but won't run without their API keys.</p>
+
+      <div class="model-select-grid" id="model-select-grid">
+        {% set ns = namespace(current_provider="") %}
+        {% for model in all_models %}
+          {% if model.provider_label != ns.current_provider %}
+            {% set ns.current_provider = model.provider_label %}
+            <div class="model-provider-header">{{ model.provider_label }}</div>
+          {% endif %}
+          <label class="model-select-card {% if model.spec in enabled_specs %}checked{% endif %}">
+            <input type="checkbox" name="model_spec" value="{{ model.spec }}"
+              {% if model.spec in enabled_specs %}checked{% endif %} />
+            <div class="model-select-info">
+              <span class="model-select-label">{{ model.label }}</span>
+              <code class="model-select-spec">{{ model.spec }}</code>
+            </div>
+            <span class="model-check-icon">✓</span>
+          </label>
+        {% endfor %}
+      </div>
+
+      <div class="settings-footer">
+        <button class="btn btn-secondary" id="btn-select-defaults">Use Defaults</button>
+        <button class="btn btn-primary" id="btn-save-models">Save Model Selection</button>
+        <span class="save-status" id="models-status"></span>
+      </div>
+    </div><!-- /tab-models -->
+
+    <!-- ── Tab: Advanced ─────────────────────────────────────────────── -->
+    <div class="tab-panel" id="tab-advanced">
+      <div class="settings-card span-2">
+        <div class="settings-card-header">
+          <div>
+            <h3>Exclusion Rules</h3>
+            <p class="hint">These apply to coordinator auto-spawn. Excluded challenges won't be picked up automatically. They still appear in the dashboard.</p>
+          </div>
+        </div>
+        <div class="settings-card-body">
+          <div class="form-group">
+            <label>Exclude by Name <span class="optional">(one per line or comma-separated)</span></label>
+            <textarea id="cfg-exclude-challenges" rows="4" placeholder="Warmup&#10;Tutorial Challenge&#10;Test 1, Test 2">{{ cfg.exclude_challenges or '' }}</textarea>
+          </div>
+          <div class="form-group">
+            <label>Exclude by Regex <span class="optional">(Python re syntax)</span></label>
+            <input type="text" id="cfg-exclude-regex" placeholder="(?i)warmup|^test-|^intro" value="{{ cfg.exclude_challenge_regex or '' }}" />
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-footer">
+        <button class="btn btn-primary" id="btn-save-advanced">Save Advanced</button>
+        <span class="save-status" id="advanced-status"></span>
+      </div>
+    </div><!-- /tab-advanced -->
+
+  </div><!-- /page-container -->
+
+  <script>
+  "use strict";
+
+  // ── Tabs ──────────────────────────────────────────────────────────
+  document.querySelectorAll(".tab-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+      document.querySelectorAll(".tab-panel").forEach(p => p.classList.remove("active"));
+      btn.classList.add("active");
+      document.getElementById("tab-" + btn.dataset.tab).classList.add("active");
+    });
+  });
+
+  // ── Model cards ────────────────────────────────────────────────────
+  document.querySelectorAll(".model-select-card").forEach(card => {
+    card.addEventListener("click", () => {
+      const cb = card.querySelector("input[type=checkbox]");
+      cb.checked = !cb.checked;
+      card.classList.toggle("checked", cb.checked);
+    });
+    // Prevent double-toggle when clicking checkbox directly
+    card.querySelector("input[type=checkbox]").addEventListener("click", e => {
+      e.stopPropagation();
+      card.classList.toggle("checked", e.target.checked);
+    });
+  });
+
+  // ── Defaults ───────────────────────────────────────────────────────
+  const DEFAULTS = [
+    "claude-sdk/claude-opus-4-6/medium",
+    "claude-sdk/claude-opus-4-6/max",
+    "codex/gpt-5.4",
+    "codex/gpt-5.4-mini",
+    "codex/gpt-5.3-codex",
+  ];
+  document.getElementById("btn-select-defaults").addEventListener("click", () => {
+    document.querySelectorAll(".model-select-card").forEach(card => {
+      const cb = card.querySelector("input[type=checkbox]");
+      cb.checked = DEFAULTS.includes(cb.value);
+      card.classList.toggle("checked", cb.checked);
+    });
+  });
+
+  // ── API call helper ────────────────────────────────────────────────
+  async function postJSON(url, data) {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    });
+    return res.json();
+  }
+
+  function setStatus(id, msg, ok) {
+    const el = document.getElementById(id);
+    el.textContent = msg;
+    el.className = "save-status " + (ok ? "ok" : "err");
+    setTimeout(() => { el.textContent = ""; el.className = "save-status"; }, 3000);
+  }
+
+  // ── Save Connections ───────────────────────────────────────────────
+  document.getElementById("btn-save-connections").addEventListener("click", async () => {
+    const body = {};
+    const map = [
+      ["cfg-ctfd-url",       "ctfd_url"],
+      ["cfg-ctfd-token",     "ctfd_token"],
+      ["cfg-anthropic",      "anthropic_api_key"],
+      ["cfg-openai",         "openai_api_key"],
+      ["cfg-gemini",         "gemini_api_key"],
+      ["cfg-claude-cli-path","claude_cli_path"],
+      ["cfg-claude-config-dir","claude_config_dir"],
+    ];
+    map.forEach(([id, key]) => {
+      const v = (document.getElementById(id) || {}).value?.trim();
+      if (v) body[key] = v;
+    });
+    try {
+      const d = await postJSON("/api/config", body);
+      if (d.ok) {
+        setStatus("connections-status", "Saved!", true);
+        // Clear secrets from DOM
+        ["cfg-ctfd-token","cfg-anthropic","cfg-openai","cfg-gemini"].forEach(id => {
+          const el = document.getElementById(id);
+          if (el) el.value = "";
+        });
+        // Reload to show updated key status badges
+        setTimeout(() => location.reload(), 600);
+      } else {
+        setStatus("connections-status", d.error || "Save failed", false);
+      }
+    } catch {
+      setStatus("connections-status", "Network error", false);
+    }
+  });
+
+  // ── Save Models ────────────────────────────────────────────────────
+  document.getElementById("btn-save-models").addEventListener("click", async () => {
+    const enabled = Array.from(
+      document.querySelectorAll(".model-select-card input[type=checkbox]:checked")
+    ).map(cb => cb.value);
+    try {
+      const d = await postJSON("/api/models", { enabled });
+      setStatus("models-status", d.ok ? `Saved ${enabled.length} models` : d.error || "Failed", d.ok);
+    } catch {
+      setStatus("models-status", "Network error", false);
+    }
+  });
+
+  // ── Save Advanced ──────────────────────────────────────────────────
+  document.getElementById("btn-save-advanced").addEventListener("click", async () => {
+    const body = {
+      exclude_challenges: document.getElementById("cfg-exclude-challenges").value,
+      exclude_challenge_regex: document.getElementById("cfg-exclude-regex").value.trim(),
+    };
+    try {
+      const d = await postJSON("/api/config", body);
+      setStatus("advanced-status", d.ok ? "Saved!" : d.error || "Failed", d.ok);
+    } catch {
+      setStatus("advanced-status", "Network error", false);
+    }
+  });
+  </script>
+</body>
+</html>

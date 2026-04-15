@@ -3,28 +3,32 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>CTF Agent Dashboard</title>
+  <title>Dashboard · CTF Agent</title>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
-  <!-- ── Header ─────────────────────────────────────────────────────── -->
-  <header class="header">
-    <div class="header-brand">
+
+  <!-- ── Top Navigation ──────────────────────────────────────────────── -->
+  <nav class="topnav">
+    <div class="topnav-brand">
       <span class="brand-icon">⚡</span>
       <span class="brand-name">CTF Agent</span>
-      <span class="brand-sub">Multi-Model Solver Swarm</span>
     </div>
-
-    <div class="header-stats" id="header-stats">
+    <div class="topnav-links">
+      <a href="/" class="nav-link active">Dashboard</a>
+      <a href="/ctfs" class="nav-link">CTFs</a>
+      <a href="/settings" class="nav-link">Settings</a>
+    </div>
+    <div class="topnav-center">
       <div class="stat-chip" id="stat-challenges">
         <span class="stat-label">Challenges</span>
         <span class="stat-value" id="val-challenges">{{ challenge_count }}</span>
       </div>
-      <div class="stat-chip solved" id="stat-solved">
+      <div class="stat-chip solved">
         <span class="stat-label">Solved</span>
         <span class="stat-value" id="val-solved">0</span>
       </div>
-      <div class="stat-chip cost" id="stat-cost">
+      <div class="stat-chip cost">
         <span class="stat-label">Cost</span>
         <span class="stat-value" id="val-cost">${{ "%.2f"|format(total_cost) }}</span>
       </div>
@@ -33,33 +37,19 @@
         <span id="ctfd-label">CTFd {% if ctfd_status.connected %}Connected{% else %}Disconnected{% endif %}</span>
       </div>
     </div>
-
-    <div class="header-user">
-      {% if user %}
-        <span class="username">{{ user.email or user.login or 'user' }}</span>
-        <a class="btn btn-sm btn-ghost" href="/auth/logout">Logout</a>
-      {% elif github_login_enabled %}
-        <a class="btn btn-sm btn-github" href="/auth/github">
-          <svg class="github-icon" viewBox="0 0 16 16" fill="currentColor" width="16" height="16">
-            <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
-          </svg>
-          Sign in with GitHub
-        </a>
-      {% else %}
-        <a class="btn btn-sm" href="/login">Login</a>
-        <a class="btn btn-sm btn-ghost" href="/register">Register</a>
-      {% endif %}
+    <div class="topnav-user">
+      <span class="nav-email">{{ user.email or user.login or 'user' }}</span>
+      <a href="/auth/logout" class="btn btn-sm btn-ghost">Logout</a>
     </div>
-  </header>
+  </nav>
 
-  <!-- ── Main layout ────────────────────────────────────────────────── -->
+  <!-- ── Main Dashboard Layout ─────────────────────────────────────── -->
   <div class="layout">
 
-    <!-- Left sidebar: challenge list -->
+    <!-- ── Left sidebar: challenge list ─────────────────────────────── -->
     <aside class="sidebar">
       <div class="sidebar-header">
         <h2>Challenges</h2>
-        <button class="btn btn-sm" id="btn-config" title="Configure">⚙</button>
       </div>
 
       <div class="challenge-filters">
@@ -70,27 +60,23 @@
       </div>
 
       <div class="challenge-list" id="challenge-list">
-        <div class="empty-state">No challenges yet. Start the coordinator to begin.</div>
+        <div class="empty-state">No challenges yet. Start a run to begin.</div>
       </div>
     </aside>
 
-    <!-- Main content: selected challenge detail -->
+    <!-- ── Main panel: challenge detail ─────────────────────────────── -->
     <main class="main-panel" id="main-panel">
       <div class="welcome-screen" id="welcome-screen">
         <div class="welcome-icon">⚡</div>
         <h1>CTF Agent Dashboard</h1>
-        <p>Select a challenge from the list to see solver progress,<br/>or start the coordinator to begin solving challenges.</p>
-
-        <div class="quick-start">
-          <h3>Quick Start</h3>
-          <div class="code-block">
-            <code>uv run ctf-solve --ctfd-url https://ctf.example.com --ctfd-token YOUR_TOKEN</code>
-          </div>
-          <p class="hint">Or click <strong>⚙</strong> to configure credentials in the UI.</p>
+        <p>Select a challenge from the list, or start a run using the controls on the right.</p>
+        <div class="quick-actions">
+          <a href="/ctfs" class="btn btn-primary">Manage CTFs</a>
+          <a href="/settings" class="btn">Configure Settings</a>
         </div>
       </div>
 
-      <!-- Challenge detail (hidden until selected) -->
+      <!-- Challenge detail (shown when a challenge is selected) -->
       <div class="challenge-detail" id="challenge-detail" style="display:none">
         <div class="challenge-header">
           <div class="challenge-title-row">
@@ -101,13 +87,25 @@
             <span class="meta-tag" id="detail-category"></span>
             <span class="meta-pts" id="detail-value"></span>
           </div>
+          <!-- Per-challenge controls -->
+          <div class="challenge-controls" id="challenge-controls">
+            <button class="ctrl-btn" id="btn-ch-stop" title="Stop / Resume this challenge">
+              <span class="ctrl-icon">⏹</span> Stop
+            </button>
+            <button class="ctrl-btn" id="btn-ch-priority" title="Mark as high priority">
+              <span class="ctrl-icon">⬆</span> Priority
+            </button>
+            <button class="ctrl-btn ctrl-danger" id="btn-ch-exclude" title="Exclude this challenge from the run">
+              <span class="ctrl-icon">✕</span> Exclude
+            </button>
+          </div>
         </div>
 
         <!-- Flag display -->
         <div class="flag-banner" id="flag-banner" style="display:none">
           <span class="flag-label">FLAG FOUND</span>
           <code class="flag-text" id="flag-text"></code>
-          <button class="btn btn-sm" id="btn-copy-flag" title="Copy">Copy</button>
+          <button class="btn btn-sm" id="btn-copy-flag">Copy</button>
         </div>
 
         <!-- Model racing grid -->
@@ -129,8 +127,51 @@
       </div>
     </main>
 
-    <!-- Right panel: cost tracker -->
+    <!-- ── Right panel: run controls & cost ──────────────────────────── -->
     <aside class="right-panel">
+
+      <!-- Run Control -->
+      <div class="panel-section">
+        <h3>Run Control</h3>
+
+        <!-- CTF selector -->
+        <div class="form-group">
+          <label>CTF Instance</label>
+          <select id="ctf-selector" class="form-select">
+            <option value="">— use default settings —</option>
+            {% for ctf in ctfs %}
+            <option value="{{ ctf.id }}">{{ ctf.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <!-- Max concurrent slider -->
+        <div class="form-group">
+          <label>Max concurrent challenges: <strong id="concurrency-val">10</strong></label>
+          <input type="range" id="concurrency-slider" min="1" max="20" value="10" class="slider" />
+        </div>
+
+        <!-- No-submit toggle -->
+        <div class="toggle-row">
+          <label class="toggle-label">
+            <input type="checkbox" id="no-submit-toggle" />
+            Dry run (don't submit flags)
+          </label>
+        </div>
+
+        <!-- Status + actions -->
+        <div class="run-row" style="margin-top:10px">
+          <span class="run-label">Status</span>
+          <span class="run-value" id="run-status">unknown</span>
+        </div>
+        <div class="run-actions">
+          <button class="btn btn-primary" id="btn-run-start">▶ Start</button>
+          <button class="btn btn-danger" id="btn-run-stop">■ Stop All</button>
+        </div>
+        <div class="msg-status" id="run-msg"></div>
+      </div>
+
+      <!-- Cost Tracker -->
       <div class="panel-section">
         <h3>Cost Tracker</h3>
         <div class="cost-total">
@@ -142,106 +183,25 @@
         </div>
       </div>
 
+      <!-- Operator Message -->
       <div class="panel-section">
         <h3>Operator Message</h3>
-        <p class="hint">Send a hint or instruction to the running coordinator.</p>
+        <p class="hint">Send a hint to the running coordinator.</p>
         <textarea class="msg-input" id="msg-input" rows="3" placeholder="e.g. The flag format is CTF{...}"></textarea>
         <button class="btn btn-primary btn-full" id="btn-send-msg">Send to Coordinator</button>
         <div class="msg-status" id="msg-status"></div>
       </div>
 
+      <!-- Connection Status -->
       <div class="panel-section">
-        <h3>Run Control</h3>
-        <p class="hint">Single global run. Only the user who started it can stop it.</p>
-        <div class="run-row">
-          <span class="run-label">Status</span>
-          <span class="run-value" id="run-status">unknown</span>
-        </div>
-        <div class="run-actions">
-          <button class="btn btn-primary" id="btn-run-start">Start</button>
-          <button class="btn" id="btn-run-stop">Stop</button>
-        </div>
-        <div class="msg-status" id="run-msg"></div>
-      </div>
-
-      <div class="panel-section">
-        <h3>Connection Status</h3>
+        <h3>WebSocket</h3>
         <div class="ws-status" id="ws-status">
           <span class="dot disconnected"></span>
-          <span id="ws-label">Connecting...</span>
+          <span id="ws-label">Connecting…</span>
         </div>
       </div>
+
     </aside>
-  </div>
-
-  <!-- ── Config modal ───────────────────────────────────────────────── -->
-  <div class="modal-overlay" id="modal-overlay" style="display:none">
-    <div class="modal">
-      <div class="modal-header">
-        <h3>Configuration</h3>
-        <button class="modal-close" id="modal-close">✕</button>
-      </div>
-      <div class="modal-body">
-        <div class="form-section">
-          <h4>CTFd Connection</h4>
-          <div class="form-group">
-            <label for="cfg-ctfd-url">CTFd URL</label>
-            <input type="url" id="cfg-ctfd-url" placeholder="https://ctf.example.com" />
-          </div>
-          <div class="form-group">
-            <label for="cfg-ctfd-token">CTFd API Token</label>
-            <input type="password" id="cfg-ctfd-token" placeholder="ctfd_your_token_here" />
-          </div>
-        </div>
-
-        <div class="form-section">
-          <h4>AI API Keys</h4>
-          <p class="hint">By default, API keys entered here are applied to the running process but <strong>not</strong> persisted to disk. Set <code>UI_PERSIST_SECRETS=1</code> if you explicitly want keys persisted.</p>
-          <div class="form-group">
-            <label for="cfg-anthropic">Anthropic API Key</label>
-            <input type="password" id="cfg-anthropic" placeholder="sk-ant-..." />
-          </div>
-          <div class="form-group">
-            <label for="cfg-openai">OpenAI API Key</label>
-            <input type="password" id="cfg-openai" placeholder="sk-..." />
-          </div>
-          <div class="form-group">
-            <label for="cfg-gemini">Gemini API Key</label>
-            <input type="password" id="cfg-gemini" placeholder="AIza..." />
-          </div>
-        </div>
-
-        <div class="form-section">
-          <h4>Claude Subscription (Claude Code CLI)</h4>
-          <p class="hint">Used by <code>claude-sdk/*</code> models. Auth comes from the Claude Code CLI session.</p>
-          <div class="form-group">
-            <label for="cfg-claude-cli-path">Claude CLI Path (optional)</label>
-            <input type="text" id="cfg-claude-cli-path" placeholder="/usr/local/bin/claude" />
-          </div>
-          <div class="form-group">
-            <label for="cfg-claude-config-dir">Claude Config Dir (optional)</label>
-            <input type="text" id="cfg-claude-config-dir" placeholder="/root/.claude" />
-          </div>
-        </div>
-
-        <div class="form-section">
-          <h4>Exclusions (Coordinator Auto-Spawn)</h4>
-          <p class="hint">These exclusions apply to coordinator auto-spawn only. They take effect the next time you start the coordinator.</p>
-          <div class="form-group">
-            <label for="cfg-exclude-challenges">Exclude Challenges (one per line)</label>
-            <textarea id="cfg-exclude-challenges" rows="3" placeholder="Some Challenge Name\nAnother Challenge"></textarea>
-          </div>
-          <div class="form-group">
-            <label for="cfg-exclude-challenge-regex">Exclude Challenge Regex (optional)</label>
-            <input type="text" id="cfg-exclude-challenge-regex" placeholder="(?i)warmup|^test-" />
-          </div>
-        </div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-secondary" id="btn-cancel-config">Cancel</button>
-        <button class="btn btn-primary" id="btn-save-config">Save & Apply</button>
-      </div>
-    </div>
   </div>
 
   <script src="/static/app.js"></script>

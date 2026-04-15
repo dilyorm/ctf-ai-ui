@@ -6,7 +6,7 @@
 
 // ── State ──────────────────────────────────────────────────────────
 const state = {
-  challenges: {},     // name → challenge object
+  challenges: {},
   selectedChallenge: null,
   costByModel: {},
   totalCost: 0,
@@ -14,6 +14,7 @@ const state = {
   wsConnected: false,
   logAutoScroll: true,
   filter: "all",
+  runStatus: { running: false, stopped_challenges: [], priority_challenges: [] },
 };
 
 // ── DOM refs ───────────────────────────────────────────────────────
@@ -43,16 +44,20 @@ const wsLabel          = $("ws-label");
 const btnSendMsg       = $("btn-send-msg");
 const msgInput         = $("msg-input");
 const msgStatus        = $("msg-status");
-const btnConfig        = $("btn-config");
-const modalOverlay     = $("modal-overlay");
-const modalClose       = $("modal-close");
-const btnCancelConfig  = $("btn-cancel-config");
-const btnSaveConfig    = $("btn-save-config");
 const btnCopyFlag      = $("btn-copy-flag");
-const runStatus        = $("run-status");
+const runStatusEl      = $("run-status");
 const runMsg           = $("run-msg");
 const btnRunStart      = $("btn-run-start");
 const btnRunStop       = $("btn-run-stop");
+const concurrencySlider = $("concurrency-slider");
+const concurrencyVal   = $("concurrency-val");
+const ctfSelector      = $("ctf-selector");
+const noSubmitToggle   = $("no-submit-toggle");
+
+// Per-challenge control buttons
+const btnChStop     = $("btn-ch-stop");
+const btnChPriority = $("btn-ch-priority");
+const btnChExclude  = $("btn-ch-exclude");
 
 // ── WebSocket ──────────────────────────────────────────────────────
 let ws = null;
@@ -89,36 +94,20 @@ function updateWSStatus(status) {
 // ── Event handler ──────────────────────────────────────────────────
 function handleEvent(evt) {
   switch (evt.type) {
-    case "snapshot":
-      applySnapshot(evt.data);
-      break;
+    case "snapshot":       applySnapshot(evt.data); break;
     case "challenge_new":
     case "challenge_update":
-    case "challenge_started":
-      upsertChallenge(evt.data);
-      break;
-    case "challenge_solved":
-      onChallengeSolved(evt.data);
-      break;
-    case "challenge_failed":
-      onChallengeFailed(evt.data);
-      break;
-    case "solver_update":
-      onSolverUpdate(evt.data);
-      break;
-    case "log_line":
-      onLogLine(evt.data);
-      break;
-    case "cost_update":
-      onCostUpdate(evt.data);
-      break;
-    case "ctfd_status":
-      onCTFdStatus(evt.data);
-      break;
+    case "challenge_started": upsertChallenge(evt.data); break;
+    case "challenge_solved":  onChallengeSolved(evt.data); break;
+    case "challenge_failed":  onChallengeFailed(evt.data); break;
+    case "solver_update":     onSolverUpdate(evt.data); break;
+    case "log_line":          onLogLine(evt.data); break;
+    case "cost_update":       onCostUpdate(evt.data); break;
+    case "ctfd_status":       onCTFdStatus(evt.data); break;
   }
 }
 
-// ── Snapshot (full state on connect) ──────────────────────────────
+// ── Snapshot ───────────────────────────────────────────────────────
 function applySnapshot(data) {
   state.challenges = data.challenges || {};
   state.totalCost = data.total_cost || 0;
@@ -128,7 +117,6 @@ function applySnapshot(data) {
   if (data.ctfd_status) onCTFdStatus(data.ctfd_status);
   onCostUpdate({ total_cost: state.totalCost, total_tokens: state.totalTokens, by_model: state.costByModel });
 
-  // Restore logs
   if (data.logs) {
     Object.entries(data.logs).forEach(([ch, lines]) => {
       state.challenges[ch] = state.challenges[ch] || { name: ch };
@@ -193,7 +181,6 @@ function onLogLine(data) {
   if (!state.challenges[name]._logs) state.challenges[name]._logs = [];
   const line = { ts: Date.now() / 1000, model: data.model, text: data.text, level: data.level || "info" };
   state.challenges[name]._logs.push(line);
-  // Keep max 500
   if (state.challenges[name]._logs.length > 500) state.challenges[name]._logs.shift();
   if (state.selectedChallenge === name) appendLogLine(line);
 }
@@ -202,23 +189,31 @@ function onCostUpdate(data) {
   if (data.total_cost !== undefined) state.totalCost = data.total_cost;
   if (data.total_tokens !== undefined) state.totalTokens = data.total_tokens;
   if (data.by_model) state.costByModel = data.by_model;
-  costTotal.textContent = "$" + state.totalCost.toFixed(4);
-  valCost.textContent = "$" + state.totalCost.toFixed(2);
+  if (costTotal) costTotal.textContent = "$" + state.totalCost.toFixed(4);
+  if (valCost) valCost.textContent = "$" + state.totalCost.toFixed(2);
   renderModelCosts();
 }
 
 function onCTFdStatus(data) {
+  if (!ctfdBadge) return;
   const connected = data.connected;
   ctfdBadge.className = "ctfd-badge " + (connected ? "connected" : "disconnected");
   ctfdLabel.textContent = "CTFd " + (connected ? "Connected" : "Disconnected");
 }
 
-// ── Render challenge list ──────────────────────────────────────────
+// ── Challenge list ─────────────────────────────────────────────────
 function renderChallengeList() {
+  if (!challengeList) return;
   const items = Object.values(state.challenges);
+  // Put priority challenges first, then sort by status
+  const stopped = new Set(state.runStatus.stopped_challenges || []);
+  const priority = new Set(state.runStatus.priority_challenges || []);
+
   const filtered = state.filter === "all" ? items : items.filter(c => c.status === state.filter);
   filtered.sort((a, b) => {
-    // Running first, then by status
+    const pa = priority.has(a.name) ? -1 : 0;
+    const pb = priority.has(b.name) ? -1 : 0;
+    if (pa !== pb) return pa - pb;
     const order = { running: 0, solved: 1, pending: 2, failed: 3 };
     return (order[a.status] ?? 99) - (order[b.status] ?? 99) || (a.name || "").localeCompare(b.name || "");
   });
@@ -228,16 +223,24 @@ function renderChallengeList() {
     return;
   }
 
-  challengeList.innerHTML = filtered.map(ch => `
-    <div class="challenge-item${state.selectedChallenge === ch.name ? " active" : ""}" data-name="${escHtml(ch.name)}">
-      <div class="ch-status-dot ${ch.status || "pending"}"></div>
-      <div class="ch-info">
-        <div class="ch-name">${escHtml(ch.name)}</div>
-        <div class="ch-meta">${escHtml(ch.category || "")}${ch.flag ? " • " + escHtml(ch.flag) : ""}</div>
+  challengeList.innerHTML = filtered.map(ch => {
+    const isStopped = stopped.has(ch.name);
+    const isPriority = priority.has(ch.name);
+    const badges = [
+      isPriority ? '<span class="ch-badge priority">▲</span>' : "",
+      isStopped  ? '<span class="ch-badge stopped">⏹</span>'  : "",
+    ].join("");
+    return `
+      <div class="challenge-item${state.selectedChallenge === ch.name ? " active" : ""}${isStopped ? " ch-stopped" : ""}" data-name="${escHtml(ch.name)}">
+        <div class="ch-status-dot ${ch.status || "pending"}"></div>
+        <div class="ch-info">
+          <div class="ch-name">${escHtml(ch.name)}${badges}</div>
+          <div class="ch-meta">${escHtml(ch.category || "")}${ch.flag ? " · " + escHtml(ch.flag) : ""}</div>
+        </div>
+        <div class="ch-pts">${ch.value ? ch.value + "pt" : ""}</div>
       </div>
-      <div class="ch-pts">${ch.value ? ch.value + "pt" : ""}</div>
-    </div>
-  `).join("");
+    `;
+  }).join("");
 
   challengeList.querySelectorAll(".challenge-item").forEach(el => {
     el.addEventListener("click", () => selectChallenge(el.dataset.name));
@@ -246,8 +249,8 @@ function renderChallengeList() {
 
 function updateHeaderStats() {
   const all = Object.values(state.challenges);
-  valChallenges.textContent = all.length;
-  valSolved.textContent = all.filter(c => c.status === "solved").length;
+  if (valChallenges) valChallenges.textContent = all.length;
+  if (valSolved) valSolved.textContent = all.filter(c => c.status === "solved").length;
 }
 
 // ── Challenge detail ───────────────────────────────────────────────
@@ -259,6 +262,7 @@ function selectChallenge(name) {
     welcomeScreen.style.display = "none";
     challengeDetail.style.display = "flex";
     renderChallengeDetail(ch);
+    updateChallengeControlButtons(name);
   }
 }
 
@@ -280,17 +284,29 @@ function renderChallengeDetail(ch) {
   renderLogs(ch);
 }
 
+function updateChallengeControlButtons(name) {
+  if (!btnChStop || !btnChPriority || !btnChExclude) return;
+  const stopped  = new Set(state.runStatus.stopped_challenges || []);
+  const priority = new Set(state.runStatus.priority_challenges || []);
+  const isStopped  = stopped.has(name);
+  const isPriority = priority.has(name);
+
+  btnChStop.innerHTML     = isStopped  ? '<span class="ctrl-icon">▶</span> Resume'   : '<span class="ctrl-icon">⏹</span> Stop';
+  btnChStop.classList.toggle("active", isStopped);
+  btnChPriority.innerHTML = isPriority ? '<span class="ctrl-icon">⬆</span> Deprioritize' : '<span class="ctrl-icon">⬆</span> Priority';
+  btnChPriority.classList.toggle("active", isPriority);
+}
+
 function updateModelsGrid(ch) {
-  if (state.selectedChallenge !== ch.name) return;
+  if (state.selectedChallenge !== ch.name || !modelsGrid) return;
   const models = ch.models || {};
   const specs = ch.model_specs || ch.models_list || Object.keys(models);
+  const allSpecs = [...new Set([...specs, ...Object.keys(models)])];
 
-  if (specs.length === 0 && Object.keys(models).length === 0) {
+  if (allSpecs.length === 0) {
     modelsGrid.innerHTML = '<div class="empty-state">No models running yet.</div>';
     return;
   }
-
-  const allSpecs = [...new Set([...specs, ...Object.keys(models)])];
 
   modelsGrid.innerHTML = allSpecs.map(spec => {
     const info = models[spec] || {};
@@ -314,12 +330,14 @@ function updateModelsGrid(ch) {
 
 // ── Logs ───────────────────────────────────────────────────────────
 function renderLogs(ch) {
+  if (!logContainer) return;
   logContainer.innerHTML = "";
   (ch._logs || []).forEach(line => appendLogLine(line, false));
   if (state.logAutoScroll) logContainer.scrollTop = logContainer.scrollHeight;
 }
 
 function appendLogLine(line, doScroll = true) {
+  if (!logContainer) return;
   if (state.selectedChallenge !== (line.challenge || state.selectedChallenge)) return;
   const ts = new Date(line.ts * 1000).toISOString().substr(11, 8);
   const el = document.createElement("div");
@@ -335,6 +353,7 @@ function appendLogLine(line, doScroll = true) {
 
 // ── Cost ───────────────────────────────────────────────────────────
 function renderModelCosts() {
+  if (!modelCosts) return;
   const entries = Object.entries(state.costByModel || {});
   if (entries.length === 0) {
     modelCosts.innerHTML = '<div class="empty-state-sm">No usage yet</div>';
@@ -354,144 +373,87 @@ function renderModelCosts() {
 }
 
 // ── Operator message ───────────────────────────────────────────────
-btnSendMsg.addEventListener("click", async () => {
-  const msg = msgInput.value.trim();
-  if (!msg) return;
-  msgStatus.textContent = "Sending…";
-  msgStatus.className = "msg-status";
-  try {
-    const res = await fetch("/api/message", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: msg }),
-    });
-    const data = await res.json();
-    if (data.ok) {
-      msgStatus.textContent = "Sent!";
-      msgStatus.className = "msg-status ok";
-      msgInput.value = "";
-    } else {
-      msgStatus.textContent = data.error || "Failed";
-      msgStatus.className = "msg-status err";
+if (btnSendMsg) {
+  btnSendMsg.addEventListener("click", async () => {
+    const msg = msgInput.value.trim();
+    if (!msg) return;
+    setStatus("msg-status", "Sending…", null);
+    try {
+      const res = await fetch("/api/message", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: msg }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        setStatus("msg-status", "Sent!", true);
+        msgInput.value = "";
+      } else {
+        setStatus("msg-status", data.error || "Failed", false);
+      }
+    } catch {
+      setStatus("msg-status", "Network error", false);
     }
-  } catch {
-    msgStatus.textContent = "Network error";
-    msgStatus.className = "msg-status err";
-  }
-  setTimeout(() => { msgStatus.textContent = ""; }, 4000);
-});
-
-// ── Config modal ───────────────────────────────────────────────────
-modalClose.addEventListener("click", closeModal);
-btnCancelConfig.addEventListener("click", closeModal);
-modalOverlay.addEventListener("click", e => { if (e.target === modalOverlay) closeModal(); });
-
-function closeModal() { modalOverlay.style.display = "none"; }
-
-btnSaveConfig.addEventListener("click", async () => {
-  const body = {};
-  const map = [
-    ["cfg-ctfd-url", "ctfd_url"],
-    ["cfg-ctfd-token", "ctfd_token"],
-    ["cfg-anthropic", "anthropic_api_key"],
-    ["cfg-openai", "openai_api_key"],
-    ["cfg-gemini", "gemini_api_key"],
-    // Claude subscription mode (Claude Code CLI)
-    ["cfg-claude-cli-path", "claude_cli_path"],
-    ["cfg-claude-config-dir", "claude_config_dir"],
-    // Exclusions (coordinator auto-spawn)
-    ["cfg-exclude-challenges", "exclude_challenges"],
-    ["cfg-exclude-challenge-regex", "exclude_challenge_regex"],
-  ];
-  map.forEach(([id, key]) => {
-    const val = $(id).value.trim();
-    if (val) body[key] = val;
   });
-  // Never leave API keys in the DOM longer than needed.
-  ["cfg-anthropic", "cfg-openai", "cfg-gemini", "cfg-ctfd-token"].forEach(id => {
-    try { $(id).value = ""; } catch { /* ignore */ }
-  });
-  try {
-    const res = await fetch("/api/config", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const data = await res.json();
-    if (data.ok) {
-      closeModal();
-      // Best-effort: refresh run status after config changes.
-      refreshRunStatus();
-    }
-  } catch {
-    alert("Failed to save config");
-  }
-});
-
-async function loadConfigIntoModal() {
-  try {
-    const res = await fetch("/api/config", { method: "GET" });
-    const data = await res.json();
-    const cfg = data.config || {};
-    if (cfg.ctfd_url) $("cfg-ctfd-url").value = cfg.ctfd_url;
-    if (cfg.claude_cli_path) $("cfg-claude-cli-path").value = cfg.claude_cli_path;
-    if (cfg.claude_config_dir) $("cfg-claude-config-dir").value = cfg.claude_config_dir;
-    if (cfg.exclude_challenges) $("cfg-exclude-challenges").value = cfg.exclude_challenges;
-    if (cfg.exclude_challenge_regex) $("cfg-exclude-challenge-regex").value = cfg.exclude_challenge_regex;
-  } catch {
-    // ignore
-  }
 }
 
-btnConfig.addEventListener("click", () => { 
-  loadConfigIntoModal();
-  modalOverlay.style.display = "flex"; 
-});
+// ── Run controls ───────────────────────────────────────────────────
+if (concurrencySlider) {
+  concurrencySlider.addEventListener("input", () => {
+    concurrencyVal.textContent = concurrencySlider.value;
+  });
+}
 
 async function refreshRunStatus() {
-  if (!runStatus) return;
+  if (!runStatusEl) return;
   try {
-    const res = await fetch("/api/run/status", { method: "GET" });
+    const res = await fetch("/api/run/status");
     const data = await res.json();
     if (!data.ok) return;
     const st = data.status || {};
-    runStatus.textContent = st.running ? "running" : "stopped";
+    state.runStatus = st;
+    runStatusEl.textContent = st.running ? "running" : "stopped";
+    runStatusEl.style.color = st.running ? "var(--green)" : "var(--text3)";
+    // Update challenge control buttons if a challenge is selected
+    if (state.selectedChallenge) updateChallengeControlButtons(state.selectedChallenge);
+    // Update sidebar badges
+    renderChallengeList();
   } catch {
-    runStatus.textContent = "unknown";
+    if (runStatusEl) runStatusEl.textContent = "unknown";
   }
 }
 
 async function runStart() {
-  runMsg.textContent = "Starting…";
-  runMsg.className = "msg-status";
+  setStatus("run-msg", "Starting…", null);
+  const ctfId = ctfSelector ? ctfSelector.value : "";
+  const maxConcurrent = concurrencySlider ? parseInt(concurrencySlider.value) : 10;
+  const noSubmit = noSubmitToggle ? noSubmitToggle.checked : false;
+
   try {
     const res = await fetch("/api/run/start", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        ctf_id: ctfId ? parseInt(ctfId) : undefined,
         coordinator: "claude",
-        max_concurrent_challenges: 10,
+        max_concurrent_challenges: maxConcurrent,
+        no_submit: noSubmit,
       }),
     });
     const data = await res.json();
     if (data.ok) {
-      runMsg.textContent = "Started";
-      runMsg.className = "msg-status ok";
+      setStatus("run-msg", "Started", true);
     } else {
-      runMsg.textContent = data.error || "Failed";
-      runMsg.className = "msg-status err";
+      setStatus("run-msg", data.error || "Failed", false);
     }
   } catch {
-    runMsg.textContent = "Network error";
-    runMsg.className = "msg-status err";
+    setStatus("run-msg", "Network error", false);
   }
   refreshRunStatus();
-  setTimeout(() => { runMsg.textContent = ""; }, 4000);
 }
 
 async function runStop() {
-  runMsg.textContent = "Stopping…";
-  runMsg.className = "msg-status";
+  setStatus("run-msg", "Stopping…", null);
   try {
     const res = await fetch("/api/run/stop", {
       method: "POST",
@@ -499,23 +461,55 @@ async function runStop() {
       body: JSON.stringify({}),
     });
     const data = await res.json();
-    if (data.ok) {
-      runMsg.textContent = data.stopped ? "Stopped" : "Not running";
-      runMsg.className = "msg-status ok";
-    } else {
-      runMsg.textContent = data.error || "Failed";
-      runMsg.className = "msg-status err";
-    }
+    setStatus("run-msg", data.ok ? (data.stopped ? "Stopped" : "Not running") : data.error || "Failed", data.ok);
   } catch {
-    runMsg.textContent = "Network error";
-    runMsg.className = "msg-status err";
+    setStatus("run-msg", "Network error", false);
   }
   refreshRunStatus();
-  setTimeout(() => { runMsg.textContent = ""; }, 4000);
 }
 
 if (btnRunStart) btnRunStart.addEventListener("click", runStart);
-if (btnRunStop) btnRunStop.addEventListener("click", runStop);
+if (btnRunStop)  btnRunStop.addEventListener("click", runStop);
+
+// ── Per-challenge controls ──────────────────────────────────────────
+async function challengeControl(endpoint) {
+  const name = state.selectedChallenge;
+  if (!name) return;
+  try {
+    const res = await fetch(`/api/run/challenge/${encodeURIComponent(name)}/${endpoint}`, { method: "POST" });
+    const data = await res.json();
+    if (data.ok) {
+      // Update local state
+      const stopped  = new Set(state.runStatus.stopped_challenges  || []);
+      const priority = new Set(state.runStatus.priority_challenges || []);
+      if (endpoint === "stop") {
+        data.stopped ? stopped.add(name) : stopped.delete(name);
+        state.runStatus.stopped_challenges = [...stopped];
+      } else if (endpoint === "priority") {
+        data.priority ? priority.add(name) : priority.delete(name);
+        state.runStatus.priority_challenges = [...priority];
+      }
+      updateChallengeControlButtons(name);
+      renderChallengeList();
+    }
+  } catch { /* ignore */ }
+}
+
+if (btnChStop)     btnChStop.addEventListener("click",     () => challengeControl("stop"));
+if (btnChPriority) btnChPriority.addEventListener("click", () => challengeControl("priority"));
+if (btnChExclude)  btnChExclude.addEventListener("click",  async () => {
+  const name = state.selectedChallenge;
+  if (!name) return;
+  if (!confirm(`Exclude "${name}" from this run? It won't be auto-spawned again.`)) return;
+  // Send as operator message — coordinator respects EXCLUDE_CHALLENGE directive
+  await fetch("/api/message", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message: `EXCLUDE_CHALLENGE: ${name}` }),
+  });
+  // Mark visually as excluded/stopped
+  await challengeControl("stop");
+});
 
 // ── Challenge filters ──────────────────────────────────────────────
 document.querySelectorAll(".filter-btn").forEach(btn => {
@@ -527,18 +521,22 @@ document.querySelectorAll(".filter-btn").forEach(btn => {
   });
 });
 
-// ── Log auto-scroll toggle ─────────────────────────────────────────
-logAutoScrollChk.addEventListener("change", () => {
-  state.logAutoScroll = logAutoScrollChk.checked;
-});
+// ── Log auto-scroll ────────────────────────────────────────────────
+if (logAutoScrollChk) {
+  logAutoScrollChk.addEventListener("change", () => {
+    state.logAutoScroll = logAutoScrollChk.checked;
+  });
+}
 
 // ── Copy flag ──────────────────────────────────────────────────────
-btnCopyFlag.addEventListener("click", () => {
-  navigator.clipboard.writeText(flagText.textContent).then(() => {
-    btnCopyFlag.textContent = "Copied!";
-    setTimeout(() => { btnCopyFlag.textContent = "Copy"; }, 2000);
+if (btnCopyFlag) {
+  btnCopyFlag.addEventListener("click", () => {
+    navigator.clipboard.writeText(flagText.textContent).then(() => {
+      btnCopyFlag.textContent = "Copied!";
+      setTimeout(() => { btnCopyFlag.textContent = "Copy"; }, 2000);
+    });
   });
-});
+}
 
 // ── Utility ───────────────────────────────────────────────────────
 function escHtml(str) {
@@ -550,13 +548,29 @@ function escHtml(str) {
     .replace(/"/g, "&quot;");
 }
 
+function setStatus(id, msg, ok) {
+  const el = $(id);
+  if (!el) return;
+  el.textContent = msg;
+  el.className = "msg-status" + (ok === true ? " ok" : ok === false ? " err" : "");
+  if (ok !== null) setTimeout(() => { el.textContent = ""; el.className = "msg-status"; }, 4000);
+}
+
 // ── Init ───────────────────────────────────────────────────────────
 function init() {
   connectWS();
   updateWSStatus("connecting");
   refreshRunStatus();
   setInterval(refreshRunStatus, 5000);
-  // Poll for status every 10s as a fallback
+
+  // Read ctf_id from URL query param and pre-select
+  const params = new URLSearchParams(location.search);
+  const ctfParam = params.get("ctf_id");
+  if (ctfParam && ctfSelector) {
+    ctfSelector.value = ctfParam;
+  }
+
+  // Fallback poll when WS is disconnected
   setInterval(async () => {
     if (!state.wsConnected) {
       try {

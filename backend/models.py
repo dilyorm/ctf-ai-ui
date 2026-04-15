@@ -26,6 +26,26 @@ DEFAULT_MODELS: list[str] = [
     "codex/gpt-5.3-codex",
 ]
 
+# Full catalog of supported models for UI model-selection page.
+ALL_MODELS: list[dict] = [
+    # ── Claude subscription (Claude Code CLI auth) ─────────────────────────────
+    {"spec": "claude-sdk/claude-opus-4-6/low",    "label": "Claude Opus 4.6 · Low effort",    "provider": "claude", "provider_label": "Claude Subscription"},
+    {"spec": "claude-sdk/claude-opus-4-6/medium",  "label": "Claude Opus 4.6 · Medium effort", "provider": "claude", "provider_label": "Claude Subscription"},
+    {"spec": "claude-sdk/claude-opus-4-6/max",     "label": "Claude Opus 4.6 · Max effort",    "provider": "claude", "provider_label": "Claude Subscription"},
+    # ── Codex / OpenAI ─────────────────────────────────────────────────────────
+    {"spec": "codex/gpt-5.4",       "label": "GPT-5.4",         "provider": "openai", "provider_label": "OpenAI / Codex"},
+    {"spec": "codex/gpt-5.4-mini",  "label": "GPT-5.4 Mini",    "provider": "openai", "provider_label": "OpenAI / Codex"},
+    {"spec": "codex/gpt-5.3-codex", "label": "GPT-5.3 Codex",   "provider": "openai", "provider_label": "OpenAI / Codex"},
+    # ── Google ─────────────────────────────────────────────────────────────────
+    {"spec": "google/gemini-3-flash-preview", "label": "Gemini 3 Flash Preview", "provider": "google", "provider_label": "Google AI"},
+    # ── Bedrock ────────────────────────────────────────────────────────────────
+    {"spec": "bedrock/us.anthropic.claude-opus-4-6-v1", "label": "Claude Opus 4.6 (Bedrock)", "provider": "bedrock", "provider_label": "AWS Bedrock"},
+    # ── Azure OpenAI ───────────────────────────────────────────────────────────
+    {"spec": "azure/claude-opus-4-6", "label": "Claude Opus 4.6 (Azure)", "provider": "azure", "provider_label": "Azure OpenAI"},
+    # ── OpenCode Zen ───────────────────────────────────────────────────────────
+    {"spec": "zen/claude-opus-4-6", "label": "Claude Opus 4.6 (Zen/OpenCode)", "provider": "zen", "provider_label": "OpenCode Zen"},
+]
+
 # Context window sizes (tokens)
 CONTEXT_WINDOWS: dict[str, int] = {
     "us.anthropic.claude-opus-4-6-v1": 1_000_000,

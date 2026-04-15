@@ -93,17 +93,18 @@
           <div class="settings-card-header">
             <div class="provider-icon provider-openai">O</div>
             <div>
-              <h3>OpenAI API Key</h3>
-              <p class="hint">Used for <code>codex/*</code> models (GPT-5.x).</p>
+              <h3>OpenAI / Codex</h3>
+              <p class="hint">Used for <code>codex/*</code> models (GPT-5.x). Paste your API key or sign in via the Codex CLI.</p>
             </div>
-            {% if cfg.has_openai %}<span class="key-status connected">Connected</span>{% else %}<span class="key-status">Not set</span>{% endif %}
+            {% if cfg.has_openai %}<span class="key-status connected" id="codex-status-badge">Connected</span>{% else %}<span class="key-status" id="codex-status-badge">Not set</span>{% endif %}
           </div>
           <div class="settings-card-body">
             <div class="form-group">
-              <label>API Key</label>
+              <label>OpenAI API Key</label>
               <input type="password" id="cfg-openai" placeholder="sk-••••••••" autocomplete="new-password" />
-              <span class="field-hint">Leave blank to keep existing key.</span>
+              <span class="field-hint">Leave blank to keep existing key. <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener" style="color:var(--accent)">Get a key &rarr;</a></span>
             </div>
+            <button class="btn btn-sm" id="btn-codex-signin" onclick="startCodexAuth()">Sign in with Codex CLI</button>
           </div>
         </div>
 
@@ -132,18 +133,36 @@
             <div class="provider-icon provider-claude">♦</div>
             <div>
               <h3>Claude Subscription (Claude Code CLI)</h3>
-              <p class="hint">Used for <code>claude-sdk/*</code> models. Auth comes from your local Claude Code CLI session — no API key needed.</p>
+              <p class="hint">Used for <code>claude-sdk/*</code> models. Sign in with your Claude account — no API key needed.</p>
             </div>
+            <span class="key-status {% if cfg.claude_config_dir %}connected{% endif %}" id="claude-status-badge">
+              {% if cfg.claude_config_dir %}Connected{% else %}Not connected{% endif %}
+            </span>
           </div>
-          <div class="settings-card-body two-col">
-            <div class="form-group">
-              <label>Claude CLI Path <span class="optional">(optional)</span></label>
-              <input type="text" id="cfg-claude-cli-path" placeholder="/usr/local/bin/claude" value="{{ cfg.claude_cli_path or '' }}" />
+          <div class="settings-card-body">
+            <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px;">
+              <button class="btn btn-primary" id="btn-claude-signin" onclick="startClaudeAuth()">Sign in to Claude</button>
+              <span id="claude-signin-hint" style="font-size:12px;color:var(--text3);">
+                {% if cfg.claude_config_dir %}
+                  Signed in. Config dir: <code>{{ cfg.claude_config_dir }}</code>
+                {% else %}
+                  Click to authenticate via your Claude account.
+                {% endif %}
+              </span>
             </div>
-            <div class="form-group">
-              <label>Claude Config Dir <span class="optional">(optional)</span></label>
-              <input type="text" id="cfg-claude-config-dir" placeholder="/root/.claude" value="{{ cfg.claude_config_dir or '' }}" />
-            </div>
+            <details style="margin-top:4px;">
+              <summary style="font-size:12px;color:var(--text3);cursor:pointer;user-select:none;">Advanced: override paths</summary>
+              <div class="two-col" style="display:grid;grid-template-columns:1fr 1fr;gap:0 16px;margin-top:10px;">
+                <div class="form-group">
+                  <label>Claude CLI Path <span class="optional">(optional)</span></label>
+                  <input type="text" id="cfg-claude-cli-path" placeholder="/usr/local/bin/claude" value="{{ cfg.claude_cli_path or '' }}" />
+                </div>
+                <div class="form-group">
+                  <label>Claude Config Dir <span class="optional">(optional)</span></label>
+                  <input type="text" id="cfg-claude-config-dir" placeholder="/root/.claude" value="{{ cfg.claude_config_dir or '' }}" />
+                </div>
+              </div>
+            </details>
           </div>
         </div>
 
@@ -213,6 +232,41 @@
     </div><!-- /tab-advanced -->
 
   </div><!-- /page-container -->
+
+  <!-- ── Auth modal ──────────────────────────────────────────────────────── -->
+  <div class="modal-overlay" id="auth-modal" style="display:none" role="dialog" aria-modal="true">
+    <div class="modal" style="max-width:540px;width:95vw;">
+      <div class="modal-header">
+        <h3 id="auth-modal-title">Sign in</h3>
+        <button class="modal-close" onclick="closeAuthModal()" aria-label="Close">&times;</button>
+      </div>
+      <div class="modal-body" id="auth-modal-body">
+        <!-- filled by JS -->
+      </div>
+    </div>
+  </div>
+
+  <style>
+  .auth-url-box {
+    background: var(--bg3); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); padding: 10px 12px;
+    word-break: break-all; font-size: 12px; font-family: monospace;
+  }
+  .auth-url-box a { color: var(--accent); text-decoration: none; }
+  .auth-url-box a:hover { text-decoration: underline; }
+  .auth-step { display: flex; flex-direction: column; gap: 10px; }
+  .auth-step p { font-size: 13px; color: var(--text2); }
+  .auth-step ol { font-size: 13px; color: var(--text2); padding-left: 18px; }
+  .auth-step ol li { margin-bottom: 6px; }
+  .auth-step code { background: var(--bg4); padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+  .auth-verify-row { display: flex; align-items: center; gap: 10px; margin-top: 6px; flex-wrap: wrap; }
+  .auth-verify-msg { font-size: 12px; color: var(--text3); }
+  .auth-verify-msg.ok  { color: var(--green); }
+  .auth-verify-msg.err { color: var(--red); }
+  .spinner { display: inline-block; width: 18px; height: 18px; border: 2px solid var(--border2); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .auth-loading { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--text2); }
+  </style>
 
   <script>
   "use strict";
@@ -335,6 +389,228 @@
       setStatus("advanced-status", "Network error", false);
     }
   });
+
+  // ── Auth modal helpers ─────────────────────────────────────────────
+  let _pollTimer = null;
+
+  function openAuthModal(title, bodyHtml) {
+    document.getElementById("auth-modal-title").textContent = title;
+    document.getElementById("auth-modal-body").innerHTML = bodyHtml;
+    document.getElementById("auth-modal").style.display = "flex";
+  }
+
+  function closeAuthModal() {
+    document.getElementById("auth-modal").style.display = "none";
+    if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
+  }
+
+  // Close on backdrop click
+  document.getElementById("auth-modal").addEventListener("click", e => {
+    if (e.target === document.getElementById("auth-modal")) closeAuthModal();
+  });
+
+  function _setClaudeConnected(configDir) {
+    const badge = document.getElementById("claude-status-badge");
+    if (badge) { badge.textContent = "Connected"; badge.className = "key-status connected"; }
+    const hint = document.getElementById("claude-signin-hint");
+    if (hint) hint.innerHTML = `Signed in. Config dir: <code>${configDir || ""}</code>`;
+    // Update the hidden config-dir input so Save picks it up
+    const inp = document.getElementById("cfg-claude-config-dir");
+    if (inp && configDir) inp.value = configDir;
+    // Auto-save config dir
+    if (configDir) postJSON("/api/config", { claude_config_dir: configDir }).catch(() => {});
+  }
+
+  function _setCodexConnected() {
+    const badge = document.getElementById("codex-status-badge");
+    if (badge) { badge.textContent = "Connected"; badge.className = "key-status connected"; }
+  }
+
+  function _copyToClipboard(text) {
+    navigator.clipboard.writeText(text).catch(() => {
+      const ta = document.createElement("textarea");
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      document.execCommand("copy"); document.body.removeChild(ta);
+    });
+  }
+
+  // ── Claude sign-in flow ────────────────────────────────────────────
+  async function startClaudeAuth() {
+    openAuthModal("Sign in to Claude", `<div class="auth-loading"><span class="spinner"></span> Contacting Claude CLI…</div>`);
+
+    let data;
+    try {
+      const res = await fetch("/api/auth/claude/start", { method: "POST" });
+      data = await res.json();
+    } catch {
+      openAuthModal("Error", `<p style="color:var(--red)">Network error — is the server running?</p>`);
+      return;
+    }
+
+    if (!data.ok) {
+      openAuthModal("Claude CLI Not Found", `
+        <div class="auth-step">
+          <p style="color:var(--red)">${data.error || "Unknown error"}</p>
+          ${data.hint ? `<p>${data.hint}</p>` : ""}
+          <p>Once installed, return here and click <strong>Sign in to Claude</strong> again.</p>
+        </div>`);
+      return;
+    }
+
+    if (data.status === "authenticated") {
+      _setClaudeConnected(data.config_dir);
+      openAuthModal("Claude Connected", `
+        <div class="auth-step">
+          <p style="color:var(--green)">✓ Claude Code CLI is already authenticated.</p>
+          ${data.config_dir ? `<p>Config dir: <code>${data.config_dir}</code></p>` : ""}
+        </div>`);
+      setTimeout(closeAuthModal, 2000);
+      return;
+    }
+
+    if (data.auth_url) {
+      _showClaudeAuthUrl(data.auth_url, data.config_dir);
+      _startClaudePoll(data.config_dir);
+      return;
+    }
+
+    // Manual fallback
+    _showClaudeManual(data.config_dir, data.message || "");
+  }
+
+  function _showClaudeAuthUrl(url, configDir) {
+    openAuthModal("Sign in to Claude", `
+      <div class="auth-step">
+        <p>Open this link in your browser to sign in to your Claude account:</p>
+        <div class="auth-url-box"><a href="${url}" target="_blank" rel="noopener">${url}</a></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <a href="${url}" target="_blank" rel="noopener" class="btn btn-primary btn-sm">Open in browser</a>
+          <button class="btn btn-sm" onclick="_copyToClipboard('${url.replace(/'/g,"\\'")}')">Copy link</button>
+        </div>
+        <p style="font-size:12px;color:var(--text3);">After approving in the browser, click <strong>Verify</strong> below.</p>
+        <div class="auth-verify-row">
+          <button class="btn btn-sm" id="claude-verify-btn" onclick="verifyClaudeAuth('${(configDir||"").replace(/'/g,"\\'")}')">Verify connection</button>
+          <span class="auth-verify-msg" id="claude-verify-msg"></span>
+        </div>
+        ${configDir ? `<details><summary style="font-size:11px;color:var(--text3);cursor:pointer;">Technical details</summary><p style="font-size:11px;color:var(--text3);margin-top:4px;">Config dir: <code>${configDir}</code></p></details>` : ""}
+      </div>`);
+  }
+
+  function _showClaudeManual(configDir, msg) {
+    openAuthModal("Manual Claude Setup", `
+      <div class="auth-step">
+        <p>${msg || "The auth URL could not be captured automatically."}</p>
+        <ol>
+          <li>SSH into this server.</li>
+          <li>Run: <code>CLAUDE_CONFIG_DIR=${configDir || "~/.claude"} claude</code></li>
+          <li>Complete sign-in in the terminal.</li>
+          <li>Return here and click <strong>Verify connection</strong>.</li>
+        </ol>
+        <div class="auth-verify-row">
+          <button class="btn btn-sm" id="claude-verify-btn" onclick="verifyClaudeAuth('${(configDir||"").replace(/'/g,"\\'")}')">Verify connection</button>
+          <span class="auth-verify-msg" id="claude-verify-msg"></span>
+        </div>
+      </div>`);
+    _startClaudePoll(configDir);
+  }
+
+  function _startClaudePoll(configDir) {
+    if (_pollTimer) clearInterval(_pollTimer);
+    _pollTimer = setInterval(async () => {
+      try {
+        const res = await fetch("/api/auth/claude/check");
+        const d = await res.json();
+        if (d.status === "authenticated") {
+          clearInterval(_pollTimer); _pollTimer = null;
+          _setClaudeConnected(d.config_dir || configDir);
+          const msg = document.getElementById("claude-verify-msg");
+          if (msg) { msg.textContent = "Connected!"; msg.className = "auth-verify-msg ok"; }
+          setTimeout(closeAuthModal, 1800);
+        }
+      } catch { /* ignore */ }
+    }, 3000);
+  }
+
+  async function verifyClaudeAuth(configDir) {
+    const btn = document.getElementById("claude-verify-btn");
+    const msg = document.getElementById("claude-verify-msg");
+    if (btn) btn.disabled = true;
+    if (msg) { msg.textContent = "Checking…"; msg.className = "auth-verify-msg"; }
+
+    try {
+      const res = await fetch("/api/auth/claude/check");
+      const d = await res.json();
+      if (d.status === "authenticated") {
+        _setClaudeConnected(d.config_dir || configDir);
+        if (msg) { msg.textContent = "Connected!"; msg.className = "auth-verify-msg ok"; }
+        setTimeout(closeAuthModal, 1800);
+      } else {
+        if (msg) { msg.textContent = "Not authenticated yet — complete sign-in and try again."; msg.className = "auth-verify-msg err"; }
+        if (btn) btn.disabled = false;
+      }
+    } catch {
+      if (msg) { msg.textContent = "Network error"; msg.className = "auth-verify-msg err"; }
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  // ── Codex sign-in flow ─────────────────────────────────────────────
+  async function startCodexAuth() {
+    openAuthModal("Sign in with Codex CLI", `<div class="auth-loading"><span class="spinner"></span> Contacting Codex CLI…</div>`);
+
+    let data;
+    try {
+      const res = await fetch("/api/auth/codex/start", { method: "POST" });
+      data = await res.json();
+    } catch {
+      openAuthModal("Error", `<p style="color:var(--red)">Network error.</p>`);
+      return;
+    }
+
+    if (!data.ok) {
+      openAuthModal("Codex CLI Not Found", `
+        <div class="auth-step">
+          <p style="color:var(--red)">${data.error || "Unknown error"}</p>
+          ${data.hint ? `<p>${data.hint}</p>` : ""}
+          ${data.alt ? `<p>${data.alt}</p>` : ""}
+          <p>You can also <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener" style="color:var(--accent)">get an OpenAI API key</a> and paste it in the API Key field.</p>
+        </div>`);
+      return;
+    }
+
+    if (data.status === "authenticated") {
+      _setCodexConnected();
+      openAuthModal("Codex Connected", `<div class="auth-step"><p style="color:var(--green)">✓ Already authenticated.</p></div>`);
+      setTimeout(closeAuthModal, 2000);
+      return;
+    }
+
+    if (data.auth_url) {
+      openAuthModal("Sign in with Codex", `
+        <div class="auth-step">
+          <p>Open this link in your browser to sign in to OpenAI:</p>
+          <div class="auth-url-box"><a href="${data.auth_url}" target="_blank" rel="noopener">${data.auth_url}</a></div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <a href="${data.auth_url}" target="_blank" rel="noopener" class="btn btn-primary btn-sm">Open in browser</a>
+            <button class="btn btn-sm" onclick="_copyToClipboard('${data.auth_url.replace(/'/g,"\\'")}')">Copy link</button>
+          </div>
+          <p style="font-size:12px;color:var(--text3);">After signing in, the Codex CLI will save your credentials. Close this dialog and save your API key if prompted.</p>
+          <div class="auth-verify-row">
+            <button class="btn btn-sm" onclick="closeAuthModal()">Done</button>
+          </div>
+        </div>`);
+      return;
+    }
+
+    // Manual fallback
+    openAuthModal("Codex: Enter API Key", `
+      <div class="auth-step">
+        <p>${data.message || "Please enter your OpenAI API key directly."}</p>
+        <p><a href="${data.api_key_url || 'https://platform.openai.com/api-keys'}" target="_blank" rel="noopener" style="color:var(--accent)">Get your OpenAI API key &rarr;</a></p>
+        <p style="font-size:12px;color:var(--text3);">Paste it into the <strong>OpenAI API Key</strong> field in settings and click <strong>Save Connections</strong>.</p>
+        <div style="margin-top:8px;"><button class="btn btn-sm" onclick="closeAuthModal()">Close</button></div>
+      </div>`);
+  }
   </script>
 </body>
 </html>

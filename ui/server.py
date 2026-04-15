@@ -11,9 +11,12 @@ Provides:
 from __future__ import annotations
 
 import asyncio
+import json as _json
 import logging
 import os
+import re
 import secrets
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -766,6 +769,267 @@ async def api_challenge_priority(name: str, user: User = Depends(_require_db_use
         verb = "PRIORITIZE_CHALLENGE" if result["priority"] else "UNPRIORITIZE_CHALLENGE"
         inbox.put_nowait(f"{verb}: {name}")
     return JSONResponse(result)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CLI Auth helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+_CLAUDE_CTF_CONFIG_ROOT = os.path.join(os.path.expanduser("~"), ".claude-ctf-agents")
+_CODEX_CTF_CONFIG_ROOT  = os.path.join(os.path.expanduser("~"), ".codex-ctf-agents")
+
+
+def _user_claude_config_dir(user_id: int) -> str:
+    return os.path.join(_CLAUDE_CTF_CONFIG_ROOT, str(user_id))
+
+
+def _claude_is_authenticated(config_dir: str) -> bool:
+    """Return True if a credentials file with non-empty content exists in config_dir."""
+    for name in (".credentials.json", "credentials.json", ".auth.json", "auth.json"):
+        path = os.path.join(config_dir, name)
+        if os.path.exists(path):
+            try:
+                with open(path) as f:
+                    data = _json.load(f)
+                if data:
+                    return True
+            except Exception:
+                pass
+    return False
+
+
+async def _capture_cli_auth_url(
+    cmd: list[str],
+    env: dict,
+    timeout: float = 12.0,
+) -> tuple[list[str], str]:
+    """Spawn *cmd*, collect stdout+stderr for *timeout* seconds and return (auth_urls, full_output)."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            stdin=asyncio.subprocess.DEVNULL,
+            env=env,
+        )
+    except FileNotFoundError:
+        raise
+
+    lines: list[str] = []
+
+    async def _read(stream: asyncio.StreamReader) -> None:
+        while True:
+            try:
+                raw = await asyncio.wait_for(stream.readline(), timeout=2.0)
+            except asyncio.TimeoutError:
+                break
+            if not raw:
+                break
+            lines.append(raw.decode("utf-8", errors="replace"))
+
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(_read(proc.stdout), _read(proc.stderr)),
+            timeout=timeout,
+        )
+    except asyncio.TimeoutError:
+        pass
+    finally:
+        try:
+            proc.kill()
+            await asyncio.wait_for(proc.wait(), timeout=3.0)
+        except Exception:
+            pass
+
+    output = "".join(lines)
+    raw_urls = re.findall(r"https://\S+", output)
+    urls = [u.rstrip(".,;)\"'") for u in raw_urls]
+    return urls, output
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Claude CLI Auth API
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@app.post("/api/auth/claude/start")
+async def api_claude_auth_start(
+    request: Request,
+    user: User = Depends(_require_db_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Begin Claude Code CLI sign-in.
+
+    Spawns the claude binary in a per-user config directory, captures any OAuth
+    URL from its output, and returns it so the browser can open it.
+    """
+    st = await db.get(UserSettings, user.id)
+    config_dir = (st.claude_config_dir if st else "") or _user_claude_config_dir(user.id)
+    claude_bin = (st.claude_cli_path if st else "") or shutil.which("claude") or "claude"
+
+    os.makedirs(config_dir, exist_ok=True)
+
+    if _claude_is_authenticated(config_dir):
+        return JSONResponse({"ok": True, "status": "authenticated", "config_dir": config_dir})
+
+    env = {
+        **os.environ,
+        "CLAUDE_CONFIG_DIR": config_dir,
+        "CLAUDECODE": "",
+        "DISPLAY": "",
+        "BROWSER": "echo",          # prevent real browser open, just echo the URL
+        "NO_COLOR": "1",
+    }
+
+    try:
+        urls, output = await _capture_cli_auth_url([claude_bin], env=env, timeout=12.0)
+    except FileNotFoundError:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "Claude CLI not found on this server.",
+                "hint": "Install Claude Code: npm install -g @anthropic-ai/claude-code",
+            },
+            status_code=404,
+        )
+
+    # Prefer claude.ai or anthropic.com URLs
+    auth_urls = [u for u in urls if any(d in u for d in ("claude.ai", "anthropic.com"))]
+    if not auth_urls:
+        auth_urls = urls  # fall back to any URL found
+
+    if auth_urls:
+        return JSONResponse(
+            {
+                "ok": True,
+                "status": "pending",
+                "auth_url": auth_urls[0],
+                "config_dir": config_dir,
+            }
+        )
+
+    # Re-check: the process might have completed auth before we could read a URL
+    if _claude_is_authenticated(config_dir):
+        return JSONResponse({"ok": True, "status": "authenticated", "config_dir": config_dir})
+
+    return JSONResponse(
+        {
+            "ok": True,
+            "status": "manual",
+            "config_dir": config_dir,
+            "message": (
+                "Could not capture the auth URL automatically "
+                "(claude may need a TTY). Follow the manual steps below."
+            ),
+        }
+    )
+
+
+@app.get("/api/auth/claude/check")
+async def api_claude_auth_check(
+    user: User = Depends(_require_db_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Poll whether Claude CLI auth has completed for this user."""
+    st = await db.get(UserSettings, user.id)
+    config_dir = (st.claude_config_dir if st else "") or _user_claude_config_dir(user.id)
+
+    if _claude_is_authenticated(config_dir):
+        # Persist the config_dir so solvers can find it
+        if not (st and st.claude_config_dir):
+            if not st:
+                st = UserSettings(user_id=user.id)
+                db.add(st)
+            st.claude_config_dir = config_dir
+            st.updated_at = datetime.now(timezone.utc)
+            await db.commit()
+        return JSONResponse({"ok": True, "status": "authenticated", "config_dir": config_dir})
+
+    return JSONResponse({"ok": True, "status": "pending"})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Codex CLI Auth API
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@app.post("/api/auth/codex/start")
+async def api_codex_auth_start(
+    request: Request,
+    user: User = Depends(_require_db_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Begin Codex / OpenAI CLI sign-in.
+
+    Tries `codex auth login` (or `codex login`) to get an OAuth URL.
+    Falls back to instructions for entering an OpenAI API key directly.
+    """
+    st = await db.get(UserSettings, user.id)
+
+    # If user already has an API key stored, report authenticated
+    try:
+        api_key = open_opt(st.openai_api_key_enc) if st and st.openai_api_key_enc else ""
+    except Exception:
+        api_key = ""
+    if api_key:
+        return JSONResponse({"ok": True, "status": "authenticated"})
+
+    codex_bin = shutil.which("codex")
+    if not codex_bin:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "Codex CLI not found on this server.",
+                "hint": "Install Codex: npm install -g @openai/codex",
+                "alt": "Or paste your OpenAI API key in the field above.",
+            },
+            status_code=404,
+        )
+
+    env = {**os.environ, "DISPLAY": "", "BROWSER": "echo", "NO_COLOR": "1"}
+
+    # Try common codex auth subcommands
+    for subcmd in (["auth", "login"], ["login"], ["auth"]):
+        try:
+            urls, _ = await _capture_cli_auth_url([codex_bin, *subcmd], env=env, timeout=10.0)
+        except FileNotFoundError:
+            break
+
+        auth_urls = [
+            u for u in urls
+            if any(d in u for d in ("openai.com", "auth0.com", "platform.openai"))
+        ]
+        if not auth_urls:
+            auth_urls = urls
+        if auth_urls:
+            return JSONResponse(
+                {"ok": True, "status": "pending", "auth_url": auth_urls[0]}
+            )
+
+    return JSONResponse(
+        {
+            "ok": True,
+            "status": "manual",
+            "message": "Could not get auth URL from codex CLI. Enter your OpenAI API key instead.",
+            "api_key_url": "https://platform.openai.com/api-keys",
+        }
+    )
+
+
+@app.get("/api/auth/codex/check")
+async def api_codex_auth_check(
+    user: User = Depends(_require_db_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Check whether Codex / OpenAI auth is complete for this user."""
+    st = await db.get(UserSettings, user.id)
+    try:
+        api_key = open_opt(st.openai_api_key_enc) if st and st.openai_api_key_enc else ""
+    except Exception:
+        api_key = ""
+    if api_key:
+        return JSONResponse({"ok": True, "status": "authenticated"})
+    return JSONResponse({"ok": True, "status": "pending"})
 
 
 # ─────────────────────────────────────────────────────────────────────────────

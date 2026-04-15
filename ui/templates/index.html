@@ -36,8 +36,7 @@
 
     <div class="header-user">
       {% if user %}
-        <img class="avatar" src="{{ user.avatar_url }}" alt="{{ user.login }}" title="{{ user.name or user.login }}" />
-        <span class="username">{{ user.name or user.login }}</span>
+        <span class="username">{{ user.email or user.login or 'user' }}</span>
         <a class="btn btn-sm btn-ghost" href="/auth/logout">Logout</a>
       {% elif github_login_enabled %}
         <a class="btn btn-sm btn-github" href="/auth/github">
@@ -47,7 +46,8 @@
           Sign in with GitHub
         </a>
       {% else %}
-        <span class="no-auth">GitHub auth not configured</span>
+        <a class="btn btn-sm" href="/login">Login</a>
+        <a class="btn btn-sm btn-ghost" href="/register">Register</a>
       {% endif %}
     </div>
   </header>
@@ -151,6 +151,20 @@
       </div>
 
       <div class="panel-section">
+        <h3>Run Control</h3>
+        <p class="hint">Single global run. Only the user who started it can stop it.</p>
+        <div class="run-row">
+          <span class="run-label">Status</span>
+          <span class="run-value" id="run-status">unknown</span>
+        </div>
+        <div class="run-actions">
+          <button class="btn btn-primary" id="btn-run-start">Start</button>
+          <button class="btn" id="btn-run-stop">Stop</button>
+        </div>
+        <div class="msg-status" id="run-msg"></div>
+      </div>
+
+      <div class="panel-section">
         <h3>Connection Status</h3>
         <div class="ws-status" id="ws-status">
           <span class="dot disconnected"></span>
@@ -182,6 +196,7 @@
 
         <div class="form-section">
           <h4>AI API Keys</h4>
+          <p class="hint">By default, API keys entered here are applied to the running process but <strong>not</strong> persisted to disk. Set <code>UI_PERSIST_SECRETS=1</code> if you explicitly want keys persisted.</p>
           <div class="form-group">
             <label for="cfg-anthropic">Anthropic API Key</label>
             <input type="password" id="cfg-anthropic" placeholder="sk-ant-..." />
@@ -193,6 +208,32 @@
           <div class="form-group">
             <label for="cfg-gemini">Gemini API Key</label>
             <input type="password" id="cfg-gemini" placeholder="AIza..." />
+          </div>
+        </div>
+
+        <div class="form-section">
+          <h4>Claude Subscription (Claude Code CLI)</h4>
+          <p class="hint">Used by <code>claude-sdk/*</code> models. Auth comes from the Claude Code CLI session.</p>
+          <div class="form-group">
+            <label for="cfg-claude-cli-path">Claude CLI Path (optional)</label>
+            <input type="text" id="cfg-claude-cli-path" placeholder="/usr/local/bin/claude" />
+          </div>
+          <div class="form-group">
+            <label for="cfg-claude-config-dir">Claude Config Dir (optional)</label>
+            <input type="text" id="cfg-claude-config-dir" placeholder="/root/.claude" />
+          </div>
+        </div>
+
+        <div class="form-section">
+          <h4>Exclusions (Coordinator Auto-Spawn)</h4>
+          <p class="hint">These exclusions apply to coordinator auto-spawn only. They take effect the next time you start the coordinator.</p>
+          <div class="form-group">
+            <label for="cfg-exclude-challenges">Exclude Challenges (one per line)</label>
+            <textarea id="cfg-exclude-challenges" rows="3" placeholder="Some Challenge Name\nAnother Challenge"></textarea>
+          </div>
+          <div class="form-group">
+            <label for="cfg-exclude-challenge-regex">Exclude Challenge Regex (optional)</label>
+            <input type="text" id="cfg-exclude-challenge-regex" placeholder="(?i)warmup|^test-" />
           </div>
         </div>
       </div>

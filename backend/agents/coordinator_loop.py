@@ -30,6 +30,7 @@ def build_deps(
     no_submit: bool = False,
     challenge_dirs: dict[str, str] | None = None,
     challenge_metas: dict[str, ChallengeMeta] | None = None,
+    exclude_challenges: set[str] | None = None,
 ) -> tuple[CTFdClient, CostTracker, CoordinatorDeps]:
     """Create CTFd client, cost tracker, and coordinator deps."""
     ctfd = CTFdClient(
@@ -52,6 +53,7 @@ def build_deps(
         max_concurrent_challenges=getattr(settings, "max_concurrent_challenges", 10),
         challenge_dirs=challenge_dirs or {},
         challenge_metas=challenge_metas or {},
+        excluded_challenges=set(exclude_challenges or set()),
     )
 
     # Pre-load already-pulled challenges
@@ -72,6 +74,7 @@ async def run_event_loop(
     cost_tracker: CostTracker,
     turn_fn: TurnFn,
     status_interval: int = 60,
+    exclude_challenges: set[str] | None = None,
 ) -> dict[str, Any]:
     """Run the shared coordinator event loop.
 
@@ -84,6 +87,17 @@ async def run_event_loop(
     """
     poller = CTFdPoller(ctfd=ctfd, interval_s=5.0)
     await poller.start()
+
+    excluded = set(exclude_challenges or set())
+    # Support a regex exclusion marker (see CLI: --exclude-challenge-regex)
+    excluded_rx = None
+    for item in list(excluded):
+        if isinstance(item, str) and item.startswith("__regex__:"):
+            import re
+
+            excluded_rx = re.compile(item.split(":", 1)[1])
+            excluded.discard(item)
+            break
 
     # Start operator message HTTP endpoint
     msg_server = await _start_msg_server(deps.operator_inbox, deps.msg_port)
@@ -104,6 +118,10 @@ async def run_event_loop(
     )
 
     unsolved = poller.known_challenges - poller.known_solved
+    if excluded:
+        unsolved -= excluded
+    if excluded_rx:
+        unsolved = {n for n in unsolved if not excluded_rx.search(n)}
     initial_msg = (
         f"CTF is LIVE. {len(poller.known_challenges)} challenges, "
         f"{len(poller.known_solved)} solved.\n"
@@ -115,7 +133,7 @@ async def run_event_loop(
         await turn_fn(initial_msg)
 
         # Auto-spawn swarms for unsolved challenges if coordinator LLM didn't
-        await _auto_spawn_unsolved(deps, poller)
+        await _auto_spawn_unsolved(deps, poller, excluded)
 
         last_status = asyncio.get_event_loop().time()
 
@@ -139,7 +157,7 @@ async def run_event_loop(
                 if evt.kind == "new_challenge":
                     parts.append(f"NEW CHALLENGE: '{evt.challenge_name}' appeared. Spawn a swarm.")
                     # Auto-spawn for new challenges
-                    await _auto_spawn_one(deps, evt.challenge_name)
+                    await _auto_spawn_one(deps, evt.challenge_name, excluded, excluded_rx)
                     # Emit to UI
                     try:
                         from ui.event_bus import get_bus
@@ -173,6 +191,23 @@ async def run_event_loop(
                         f"SOLVER FINISHED: Swarm for '{name}' completed. Check results or retry."
                     )
                     deps.swarm_tasks.pop(name, None)
+
+            # Retire completed swarms so auto-spawn can fill capacity.
+            # Without this, deps.swarms retains finished swarms forever and new swarms
+            # are never spawned (because _auto_spawn_one checks `if name in deps.swarms`).
+            retired: list[str] = []
+            for name, swarm in list(deps.swarms.items()):
+                task = deps.swarm_tasks.get(name)
+                if swarm.cancel_event.is_set() or (task and task.done()):
+                    deps.swarms.pop(name, None)
+                    deps.swarm_tasks.pop(name, None)
+                    retired.append(name)
+            if retired:
+                logger.info("Retired %d completed swarm(s)", len(retired))
+
+            # Keep the swarm pool full: spawn for any unsolved challenges that
+            # don't currently have active swarms.
+            await _auto_spawn_unsolved(deps, poller, excluded, excluded_rx)
 
             # Drain solver-to-coordinator messages
             while True:
@@ -213,7 +248,9 @@ async def run_event_loop(
                 logger.info("Event -> coordinator: %s", msg[:200])
                 await turn_fn(msg)
 
-    except KeyboardInterrupt, asyncio.CancelledError:
+    except KeyboardInterrupt:
+        logger.info("Coordinator shutting down...")
+    except asyncio.CancelledError:
         logger.info("Coordinator shutting down...")
     except Exception as e:
         logger.error("Coordinator fatal: %s", e, exc_info=True)
@@ -241,8 +278,17 @@ async def run_event_loop(
     }
 
 
-async def _auto_spawn_one(deps: CoordinatorDeps, challenge_name: str) -> None:
+async def _auto_spawn_one(
+    deps: CoordinatorDeps,
+    challenge_name: str,
+    excluded: set[str] | None = None,
+    excluded_rx=None,
+) -> None:
     """Auto-spawn a swarm for a single challenge if not already running."""
+    if excluded and challenge_name in excluded:
+        return
+    if excluded_rx and excluded_rx.search(challenge_name):
+        return
     if challenge_name in deps.swarms:
         return
     active = sum(1 for t in deps.swarm_tasks.values() if not t.done())
@@ -257,11 +303,20 @@ async def _auto_spawn_one(deps: CoordinatorDeps, challenge_name: str) -> None:
         logger.warning(f"Auto-spawn failed for {challenge_name}: {e}")
 
 
-async def _auto_spawn_unsolved(deps: CoordinatorDeps, poller) -> None:
+async def _auto_spawn_unsolved(
+    deps: CoordinatorDeps,
+    poller,
+    excluded: set[str] | None = None,
+    excluded_rx=None,
+) -> None:
     """Auto-spawn swarms for all unsolved challenges that don't have active swarms."""
     unsolved = poller.known_challenges - poller.known_solved
+    if excluded:
+        unsolved -= excluded
+    if excluded_rx:
+        unsolved = {n for n in unsolved if not excluded_rx.search(n)}
     for name in sorted(unsolved):
-        await _auto_spawn_one(deps, name)
+        await _auto_spawn_one(deps, name, excluded, excluded_rx)
 
 
 async def _start_msg_server(inbox: asyncio.Queue, port: int = 0) -> asyncio.Server | None:
@@ -288,7 +343,9 @@ async def _start_msg_server(inbox: asyncio.Queue, port: int = 0) -> asyncio.Serv
                 try:
                     data = json.loads(body)
                     message = data.get("message", body.decode())
-                except json.JSONDecodeError, UnicodeDecodeError:
+                except json.JSONDecodeError:
+                    message = body.decode("utf-8", errors="replace")
+                except UnicodeDecodeError:
                     message = body.decode("utf-8", errors="replace")
 
                 inbox.put_nowait(message)

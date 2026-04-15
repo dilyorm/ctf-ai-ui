@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Register • CTF Agent</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="layout" style="grid-template-columns: 1fr;">
+    <main class="main-panel" style="padding: 24px;">
+      <div class="section" style="max-width: 480px; margin: 0 auto;">
+        <h2 class="section-title">Register</h2>
+        {% if error %}
+          <div class="empty-state" style="color: #b00020;">{{ error }}</div>
+        {% endif %}
+        <form method="post" action="/register">
+          <div class="form-group">
+            <label for="email">Email</label>
+            <input type="email" id="email" name="email" required />
+          </div>
+          <div class="form-group">
+            <label for="password">Password (min 8 chars)</label>
+            <input type="password" id="password" name="password" required />
+          </div>
+          <button class="btn btn-primary btn-full" type="submit">Create account</button>
+        </form>
+        <p class="hint" style="margin-top: 12px;">Already have an account? <a href="/login">Login</a></p>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

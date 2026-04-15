@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -37,7 +39,28 @@ def _setup_logging(verbose: bool = False) -> None:
 @click.option("--models", multiple=True, help="Model specs (default: all configured)")
 @click.option("--challenge", default=None, help="Solve a single challenge directory")
 @click.option("--challenges-dir", default="challenges", help="Directory for challenge files")
+@click.option(
+    "--exclude-challenge",
+    "exclude_challenges",
+    multiple=True,
+    help="Challenge name to exclude (repeatable).",
+)
+@click.option(
+    "--exclude-challenge-regex",
+    default=None,
+    help="Regex to exclude challenges by name (applies to auto-spawn only).",
+)
 @click.option("--no-submit", is_flag=True, help="Dry run — don't submit flags")
+@click.option(
+    "--claude-cli-path",
+    default=None,
+    help="Path to Claude Code CLI binary (subscription mode). Overrides CLAUDE_CLI_PATH.",
+)
+@click.option(
+    "--claude-config-dir",
+    default=None,
+    help="Claude config dir (subscription mode). Overrides CLAUDE_CONFIG_DIR.",
+)
 @click.option(
     "--coordinator-model", default=None, help="Model for coordinator (default: claude-opus-4-6)"
 )
@@ -60,7 +83,11 @@ def main(
     models: tuple[str, ...],
     challenge: str | None,
     challenges_dir: str,
+    exclude_challenges: tuple[str, ...],
+    exclude_challenge_regex: str | None,
     no_submit: bool,
+    claude_cli_path: str | None,
+    claude_config_dir: str | None,
     coordinator_model: str | None,
     coordinator: str,
     max_challenges: int,
@@ -84,7 +111,66 @@ def main(
         settings.ctfd_token = ctfd_token
     settings.max_concurrent_challenges = max_challenges
 
+    # Subscription-backed Claude SDK uses the local Claude Code CLI session.
+    # Allow callers to override the CLI path / config dir (useful in containers).
+    if claude_cli_path:
+        settings.claude_cli_path = claude_cli_path
+    if claude_config_dir:
+        settings.claude_config_dir = claude_config_dir
+
     model_specs = list(models) if models else list(DEFAULT_MODELS)
+
+    # Normalize exclusions (passed into coordinator loop for auto-spawn)
+    exclude_list: list[str] = list(exclude_challenges)
+
+    # UI / env compatibility: allow exclusions to be configured via env vars.
+    # CLI flags take precedence when provided.
+    if not exclude_list:
+        raw = (os.environ.get("EXCLUDE_CHALLENGES") or "").strip()
+        if raw:
+            # Support newline or comma-separated entries.
+            parts: list[str] = []
+            for line in raw.splitlines():
+                parts.extend(line.split(","))
+            exclude_list = [p.strip() for p in parts if p.strip()]
+
+    if exclude_challenge_regex is None:
+        exclude_challenge_regex = (os.environ.get("EXCLUDE_CHALLENGE_REGEX") or "").strip() or None
+
+    if exclude_challenge_regex:
+        import re
+
+        # Validate early so we fail fast if misconfigured.
+        re.compile(exclude_challenge_regex)
+
+    # If the host doesn't have the `codex` CLI installed, codex-backed solvers
+    # will crash immediately. Filter them out so the swarm can still run.
+    if shutil.which("codex") is None:
+        before = list(model_specs)
+        model_specs = [m for m in model_specs if not m.startswith("codex/")]
+        removed = [m for m in before if m.startswith("codex/")]
+        if removed:
+            console.print(
+                "[yellow]Warning:[/yellow] `codex` CLI not found; disabling codex models: "
+                + ", ".join(removed)
+            )
+
+    # Claude subscription mode requires the `claude` CLI. If it's not installed and
+    # the user didn't provide --claude-cli-path, claude-agent-sdk solvers will fail.
+    if not settings.claude_cli_path and shutil.which("claude") is None:
+        before = list(model_specs)
+        model_specs = [m for m in model_specs if not m.startswith("claude-sdk/")]
+        removed = [m for m in before if m.startswith("claude-sdk/")]
+        if removed:
+            console.print(
+                "[yellow]Warning:[/yellow] `claude` CLI not found; disabling claude-sdk models: "
+                + ", ".join(removed)
+            )
+
+    if not model_specs:
+        raise click.ClickException(
+            "No models configured after filtering. Install `codex` or pass `--models` explicitly."
+        )
 
     console.print("[bold]CTF Agent v2[/bold]")
     console.print(f"  CTFd: {settings.ctfd_url}")
@@ -109,6 +195,8 @@ def main(
                 settings,
                 model_specs,
                 challenges_dir,
+                exclude_list,
+                exclude_challenge_regex,
                 no_submit,
                 coordinator_model,
                 coordinator,
@@ -205,7 +293,9 @@ async def _run_single(
             ui_task.cancel()
             try:
                 await ui_task
-            except asyncio.CancelledError, Exception:
+            except asyncio.CancelledError:
+                pass
+            except Exception:
                 pass
 
 
@@ -213,6 +303,8 @@ async def _run_coordinator(
     settings: Settings,
     model_specs: list[str],
     challenges_dir: str,
+    exclude_challenges: list[str],
+    exclude_challenge_regex: str | None,
     no_submit: bool,
     coordinator_model: str | None,
     coordinator_backend: str,
@@ -246,6 +338,8 @@ async def _run_coordinator(
                 settings=settings,
                 model_specs=model_specs,
                 challenges_root=challenges_dir,
+                exclude_challenges=exclude_challenges,
+                exclude_challenge_regex=exclude_challenge_regex,
                 no_submit=no_submit,
                 coordinator_model=coordinator_model,
                 msg_port=msg_port,
@@ -257,6 +351,8 @@ async def _run_coordinator(
                 settings=settings,
                 model_specs=model_specs,
                 challenges_root=challenges_dir,
+                exclude_challenges=exclude_challenges,
+                exclude_challenge_regex=exclude_challenge_regex,
                 no_submit=no_submit,
                 coordinator_model=coordinator_model,
                 msg_port=msg_port,
@@ -266,7 +362,9 @@ async def _run_coordinator(
             ui_task.cancel()
             try:
                 await ui_task
-            except asyncio.CancelledError, Exception:
+            except asyncio.CancelledError:
+                pass
+            except Exception:
                 pass
 
     console.print("\n[bold]Final Results:[/bold]")

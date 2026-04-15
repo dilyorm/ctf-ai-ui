@@ -49,6 +49,10 @@ const modalClose       = $("modal-close");
 const btnCancelConfig  = $("btn-cancel-config");
 const btnSaveConfig    = $("btn-save-config");
 const btnCopyFlag      = $("btn-copy-flag");
+const runStatus        = $("run-status");
+const runMsg           = $("run-msg");
+const btnRunStart      = $("btn-run-start");
+const btnRunStop       = $("btn-run-stop");
 
 // ── WebSocket ──────────────────────────────────────────────────────
 let ws = null;
@@ -378,7 +382,6 @@ btnSendMsg.addEventListener("click", async () => {
 });
 
 // ── Config modal ───────────────────────────────────────────────────
-btnConfig.addEventListener("click", () => { modalOverlay.style.display = "flex"; });
 modalClose.addEventListener("click", closeModal);
 btnCancelConfig.addEventListener("click", closeModal);
 modalOverlay.addEventListener("click", e => { if (e.target === modalOverlay) closeModal(); });
@@ -393,10 +396,20 @@ btnSaveConfig.addEventListener("click", async () => {
     ["cfg-anthropic", "anthropic_api_key"],
     ["cfg-openai", "openai_api_key"],
     ["cfg-gemini", "gemini_api_key"],
+    // Claude subscription mode (Claude Code CLI)
+    ["cfg-claude-cli-path", "claude_cli_path"],
+    ["cfg-claude-config-dir", "claude_config_dir"],
+    // Exclusions (coordinator auto-spawn)
+    ["cfg-exclude-challenges", "exclude_challenges"],
+    ["cfg-exclude-challenge-regex", "exclude_challenge_regex"],
   ];
   map.forEach(([id, key]) => {
     const val = $(id).value.trim();
     if (val) body[key] = val;
+  });
+  // Never leave API keys in the DOM longer than needed.
+  ["cfg-anthropic", "cfg-openai", "cfg-gemini", "cfg-ctfd-token"].forEach(id => {
+    try { $(id).value = ""; } catch { /* ignore */ }
   });
   try {
     const res = await fetch("/api/config", {
@@ -407,12 +420,102 @@ btnSaveConfig.addEventListener("click", async () => {
     const data = await res.json();
     if (data.ok) {
       closeModal();
-      alert(`Saved: ${data.updated.join(", ") || "nothing changed"}`);
+      // Best-effort: refresh run status after config changes.
+      refreshRunStatus();
     }
   } catch {
     alert("Failed to save config");
   }
 });
+
+async function loadConfigIntoModal() {
+  try {
+    const res = await fetch("/api/config", { method: "GET" });
+    const data = await res.json();
+    const cfg = data.config || {};
+    if (cfg.ctfd_url) $("cfg-ctfd-url").value = cfg.ctfd_url;
+    if (cfg.claude_cli_path) $("cfg-claude-cli-path").value = cfg.claude_cli_path;
+    if (cfg.claude_config_dir) $("cfg-claude-config-dir").value = cfg.claude_config_dir;
+    if (cfg.exclude_challenges) $("cfg-exclude-challenges").value = cfg.exclude_challenges;
+    if (cfg.exclude_challenge_regex) $("cfg-exclude-challenge-regex").value = cfg.exclude_challenge_regex;
+  } catch {
+    // ignore
+  }
+}
+
+btnConfig.addEventListener("click", () => { 
+  loadConfigIntoModal();
+  modalOverlay.style.display = "flex"; 
+});
+
+async function refreshRunStatus() {
+  if (!runStatus) return;
+  try {
+    const res = await fetch("/api/run/status", { method: "GET" });
+    const data = await res.json();
+    if (!data.ok) return;
+    const st = data.status || {};
+    runStatus.textContent = st.running ? "running" : "stopped";
+  } catch {
+    runStatus.textContent = "unknown";
+  }
+}
+
+async function runStart() {
+  runMsg.textContent = "Starting…";
+  runMsg.className = "msg-status";
+  try {
+    const res = await fetch("/api/run/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        coordinator: "claude",
+        max_concurrent_challenges: 10,
+      }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      runMsg.textContent = "Started";
+      runMsg.className = "msg-status ok";
+    } else {
+      runMsg.textContent = data.error || "Failed";
+      runMsg.className = "msg-status err";
+    }
+  } catch {
+    runMsg.textContent = "Network error";
+    runMsg.className = "msg-status err";
+  }
+  refreshRunStatus();
+  setTimeout(() => { runMsg.textContent = ""; }, 4000);
+}
+
+async function runStop() {
+  runMsg.textContent = "Stopping…";
+  runMsg.className = "msg-status";
+  try {
+    const res = await fetch("/api/run/stop", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      runMsg.textContent = data.stopped ? "Stopped" : "Not running";
+      runMsg.className = "msg-status ok";
+    } else {
+      runMsg.textContent = data.error || "Failed";
+      runMsg.className = "msg-status err";
+    }
+  } catch {
+    runMsg.textContent = "Network error";
+    runMsg.className = "msg-status err";
+  }
+  refreshRunStatus();
+  setTimeout(() => { runMsg.textContent = ""; }, 4000);
+}
+
+if (btnRunStart) btnRunStart.addEventListener("click", runStart);
+if (btnRunStop) btnRunStop.addEventListener("click", runStop);
 
 // ── Challenge filters ──────────────────────────────────────────────
 document.querySelectorAll(".filter-btn").forEach(btn => {
@@ -451,6 +554,8 @@ function escHtml(str) {
 function init() {
   connectWS();
   updateWSStatus("connecting");
+  refreshRunStatus();
+  setInterval(refreshRunStatus, 5000);
   // Poll for status every 10s as a fallback
   setInterval(async () => {
     if (!state.wsConnected) {

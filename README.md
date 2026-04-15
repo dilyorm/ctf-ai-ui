@@ -60,6 +60,12 @@ Each solver runs in an isolated Docker container with CTF tools pre-installed. S
 # Install
 uv sync
 
+# Start local Postgres
+./scripts/start-postgres.sh
+
+# Create tables
+uv run alembic upgrade head
+
 # Build sandbox image
 docker build -f sandbox/Dockerfile.sandbox -t ctf-sandbox .
 
@@ -75,6 +81,17 @@ uv run ctf-solve \
   --max-challenges 10 \
   -v
 ```
+
+## Web UI (Auth + Run Control)
+
+```bash
+uv run ctf-ui
+```
+
+1. Visit http://localhost:8080
+1. Register/login
+1. Click the gear icon to save CTFd URL/token and keys (encrypted in Postgres; requires `APP_SECRET_KEY`)
+1. Use Run Control to start/stop the single global run
 
 ## Coordinator Backends
 

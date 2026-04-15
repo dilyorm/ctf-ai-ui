@@ -17,6 +17,12 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     gemini_api_key: str = ""
 
+    # Claude subscription (Claude Code CLI)
+    # When using claude-agent-sdk (provider: claude-sdk/*), auth comes from the
+    # local Claude Code CLI session, not ANTHROPIC_API_KEY.
+    claude_cli_path: str = ""  # optional override for the `claude` binary (env: CLAUDE_CLI_PATH)
+    claude_config_dir: str = ""  # optional override for Claude config home (env: CLAUDE_CONFIG_DIR)
+
     # Provider-specific (optional, for Bedrock/Azure/Zen fallback)
     aws_region: str = "us-east-1"
     aws_bearer_token: str = ""

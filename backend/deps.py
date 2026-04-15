@@ -45,6 +45,9 @@ class CoordinatorDeps:
     no_submit: bool = False
     max_concurrent_challenges: int = 10
 
+    # Exclusions (used to prevent spawning certain challenges)
+    excluded_challenges: set[str] = field(default_factory=set)
+
     msg_port: int = 0  # 0 = auto-pick free port
 
     # Runtime state

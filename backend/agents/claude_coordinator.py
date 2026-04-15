@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -62,7 +63,11 @@ def _text(s: str) -> dict:
 def _build_coordinator_mcp(deps: CoordinatorDeps):
     """Build MCP server — thin wrappers around coordinator_core functions."""
 
-    @tool("fetch_challenges", "List all challenges with category, points, solve count, and status.", {})
+    @tool(
+        "fetch_challenges",
+        "List all challenges with category, points, solve count, and status.",
+        {},
+    )
     async def fetch_challenges(args: dict) -> dict:
         return _text(await do_fetch_challenges(deps))
 
@@ -86,22 +91,50 @@ def _build_coordinator_mcp(deps: CoordinatorDeps):
     async def kill_swarm(args: dict) -> dict:
         return _text(await do_kill_swarm(deps, args["challenge_name"]))
 
-    @tool("bump_agent", "Send targeted insights to a stuck agent.", {"challenge_name": str, "model_spec": str, "insights": str})
+    @tool(
+        "bump_agent",
+        "Send targeted insights to a stuck agent.",
+        {"challenge_name": str, "model_spec": str, "insights": str},
+    )
     async def bump_agent(args: dict) -> dict:
-        return _text(await do_bump_agent(deps, args["challenge_name"], args["model_spec"], args["insights"]))
+        return _text(
+            await do_bump_agent(deps, args["challenge_name"], args["model_spec"], args["insights"])
+        )
 
-    @tool("broadcast", "Broadcast a strategic hint to ALL solvers on a challenge.", {"challenge_name": str, "message": str})
+    @tool(
+        "broadcast",
+        "Broadcast a strategic hint to ALL solvers on a challenge.",
+        {"challenge_name": str, "message": str},
+    )
     async def broadcast(args: dict) -> dict:
         return _text(await do_broadcast(deps, args["challenge_name"], args["message"]))
 
-    @tool("read_solver_trace", "Read recent trace events from a specific solver. Use this to understand what a solver is doing, what it tried, and where it's stuck.", {"challenge_name": str, "model_spec": str, "last_n": int})
+    @tool(
+        "read_solver_trace",
+        "Read recent trace events from a specific solver. Use this to understand what a solver is doing, what it tried, and where it's stuck.",
+        {"challenge_name": str, "model_spec": str, "last_n": int},
+    )
     async def read_solver_trace(args: dict) -> dict:
-        return _text(await do_read_solver_trace(deps, args["challenge_name"], args["model_spec"], args.get("last_n", 20)))
+        return _text(
+            await do_read_solver_trace(
+                deps, args["challenge_name"], args["model_spec"], args.get("last_n", 20)
+            )
+        )
 
     return create_sdk_mcp_server(
-        name="coordinator", version="1.0.0",
-        tools=[fetch_challenges, get_solve_status, spawn_swarm, check_swarm_status,
-               submit_flag, kill_swarm, bump_agent, broadcast, read_solver_trace],
+        name="coordinator",
+        version="1.0.0",
+        tools=[
+            fetch_challenges,
+            get_solve_status,
+            spawn_swarm,
+            check_swarm_status,
+            submit_flag,
+            kill_swarm,
+            bump_agent,
+            broadcast,
+            read_solver_trace,
+        ],
     )
 
 
@@ -112,10 +145,22 @@ async def run_claude_coordinator(
     no_submit: bool = False,
     coordinator_model: str | None = None,
     msg_port: int = 0,
+    exclude_challenges: list[str] | None = None,
+    exclude_challenge_regex: str | None = None,
 ) -> dict[str, Any]:
     """Run the Claude Agent SDK coordinator with the shared event loop."""
+    excluded = set(exclude_challenges or [])
+    if exclude_challenge_regex:
+        # Handled inside coordinator loop; store as a marker in excluded set.
+        # This avoids threading a separate argument through every call site.
+        excluded.add(f"__regex__:{exclude_challenge_regex}")
+
     ctfd, cost_tracker, deps = build_deps(
-        settings, model_specs, challenges_root, no_submit,
+        settings,
+        model_specs,
+        challenges_root,
+        no_submit,
+        exclude_challenges=excluded,
     )
     deps.msg_port = msg_port
 
@@ -123,13 +168,22 @@ async def run_claude_coordinator(
     resolved_model = coordinator_model or "claude-opus-4-6"
 
     allowed = {
-        "mcp__coordinator__fetch_challenges", "mcp__coordinator__get_solve_status",
-        "mcp__coordinator__spawn_swarm", "mcp__coordinator__check_swarm_status",
-        "mcp__coordinator__submit_flag", "mcp__coordinator__kill_swarm",
-        "mcp__coordinator__bump_agent", "mcp__coordinator__broadcast",
+        "mcp__coordinator__fetch_challenges",
+        "mcp__coordinator__get_solve_status",
+        "mcp__coordinator__spawn_swarm",
+        "mcp__coordinator__check_swarm_status",
+        "mcp__coordinator__submit_flag",
+        "mcp__coordinator__kill_swarm",
+        "mcp__coordinator__bump_agent",
+        "mcp__coordinator__broadcast",
         "mcp__coordinator__read_solver_trace",
         "ToolSearch",
-        "TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "TaskOutput", "TaskStop",
+        "TaskCreate",
+        "TaskUpdate",
+        "TaskGet",
+        "TaskList",
+        "TaskOutput",
+        "TaskStop",
     }
 
     async def enforce_allowlist(input_data, tool_use_id, context):
@@ -149,7 +203,15 @@ async def run_claude_coordinator(
     options = ClaudeAgentOptions(
         model=resolved_model,
         system_prompt=COORDINATOR_PROMPT,
-        env={"CLAUDECODE": ""},
+        env={
+            "CLAUDECODE": "",
+            **(
+                {"CLAUDE_CONFIG_DIR": settings.claude_config_dir}
+                if getattr(settings, "claude_config_dir", "")
+                else {}
+            ),
+        },
+        cli_path=(settings.claude_cli_path or None),
         mcp_servers={"coordinator": mcp_server},
         allowed_tools=list(allowed),
         permission_mode="bypassPermissions",
@@ -159,19 +221,38 @@ async def run_claude_coordinator(
     )
 
     async with ClaudeSDKClient(options=options) as client:
+
         async def turn_fn(msg: str) -> None:
             logger.debug(f"Coordinator query: {msg[:200]}")
             await client.query(msg)
             msg_count = 0
-            async for message in client.receive_response():
+            # Claude SDK streaming can occasionally fail to emit a terminal ResultMessage.
+            # Don't block the entire coordinator loop forever; time out and continue.
+            it = client.receive_response()
+            while True:
+                try:
+                    message = await asyncio.wait_for(it.__anext__(), timeout=60.0)
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "Coordinator response timed out (no terminal message); continuing"
+                    )
+                    break
+                except StopAsyncIteration:
+                    break
+
                 msg_count += 1
                 msg_type = type(message).__name__
                 logger.debug(f"Coordinator received: {msg_type}")
                 if isinstance(message, ResultMessage):
                     cost = getattr(message, "total_cost_usd", 0)
                     session = getattr(message, "session_id", None)
-                    logger.info(f"Claude coordinator turn done (messages={msg_count}, cost=${cost:.4f}, session={session})")
+                    logger.info(
+                        f"Claude coordinator turn done (messages={msg_count}, cost=${cost:.4f}, session={session})"
+                    )
+                    break
             if msg_count == 0:
                 logger.warning("Coordinator turn produced no messages!")
 
-        return await run_event_loop(deps, ctfd, cost_tracker, turn_fn)
+        return await run_event_loop(
+            deps, ctfd, cost_tracker, turn_fn, exclude_challenges=deps.excluded_challenges
+        )

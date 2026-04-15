@@ -38,6 +38,14 @@ async def do_get_solve_status(deps: CoordinatorDeps) -> str:
 
 
 async def do_spawn_swarm(deps: CoordinatorDeps, challenge_name: str) -> str:
+    if getattr(deps, "excluded_challenges", set()):
+        # Support a regex exclusion marker used by the coordinator loop.
+        for item in deps.excluded_challenges:
+            if isinstance(item, str) and item.startswith("__regex__:"):
+                return f"Challenge '{challenge_name}' excluded by regex; not spawning a swarm."
+        if challenge_name in deps.excluded_challenges:
+            return f"Challenge '{challenge_name}' is excluded; not spawning a swarm."
+
     # Retire ALL finished swarms before checking capacity
     finished = [
         name

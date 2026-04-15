@@ -126,7 +126,9 @@ class EventBus:
                     self.challenges.setdefault(
                         name, {"name": name, "models": {}, "status": "pending"}
                     )
-                    self.challenges[name].update(d)
+                    for k, v in d.items():
+                        if k != "models":
+                            self.challenges[name][k] = v
 
             case "challenge_started":
                 name = d.get("name", "")
@@ -135,7 +137,13 @@ class EventBus:
                         name, {"name": name, "models": {}, "status": "running"}
                     )
                     self.challenges[name]["status"] = "running"
-                    self.challenges[name].update(d)
+                    for k, v in d.items():
+                        # Keep "models" as a dict for per-model status tracking;
+                        # store the list of model specs under "model_specs" instead
+                        if k == "models":
+                            self.challenges[name]["model_specs"] = v
+                        else:
+                            self.challenges[name][k] = v
                     if name not in self.logs:
                         self.logs[name] = deque(maxlen=MAX_LOG_LINES)
 
@@ -156,6 +164,9 @@ class EventBus:
                 model = d.get("model", "")
                 if ch and model:
                     self.challenges.setdefault(ch, {"name": ch, "models": {}, "status": "running"})
+                    # Ensure models is a dict (not a list from challenge_started)
+                    if not isinstance(self.challenges[ch].get("models"), dict):
+                        self.challenges[ch]["models"] = {}
                     self.challenges[ch]["models"][model] = {
                         "status": d.get("status", "running"),
                         "steps": d.get("steps", 0),

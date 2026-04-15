@@ -11,7 +11,9 @@ Usage (from cli.py or coordinator code):
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+from pathlib import Path
 import time
 from typing import Any
 
@@ -197,20 +199,131 @@ class SwarmObserver:
         original_get_status = swarm.get_status
 
         async def status_poller():
+            # Track per-solver trace offsets so we can stream trace events as UI log lines.
+            trace_offsets: dict[str, int] = {}
+
+            def _solver_progress(solver: Any) -> tuple[int, float, str]:
+                """Best-effort: return (steps, cost_usd, findings)."""
+                steps = 0
+                cost = 0.0
+                findings = ""
+
+                # ClaudeSolver uses private fields
+                if hasattr(solver, "_step_count"):
+                    try:
+                        steps = int(getattr(solver, "_step_count") or 0)
+                    except Exception:
+                        pass
+                if hasattr(solver, "_cost_usd"):
+                    try:
+                        cost = float(getattr(solver, "_cost_usd") or 0.0)
+                    except Exception:
+                        pass
+                if hasattr(solver, "_findings"):
+                    try:
+                        findings = str(getattr(solver, "_findings") or "")
+                    except Exception:
+                        pass
+
+                # Pydantic-AI Solver stores step count in a list
+                if steps == 0 and hasattr(solver, "_step_count"):
+                    try:
+                        sc = getattr(solver, "_step_count")
+                        if isinstance(sc, list) and sc:
+                            steps = int(sc[0])
+                    except Exception:
+                        pass
+
+                return steps, cost, findings
+
+            def _emit_trace_lines(challenge: str, model: str, trace_path: str) -> None:
+                """Tail a JSONL solver trace file and emit as UI log lines."""
+                try:
+                    p = Path(trace_path)
+                    if not p.exists():
+                        return
+
+                    off = trace_offsets.get(model, 0)
+                    data = p.read_bytes()
+                    if off > len(data):
+                        off = 0
+                    new = data[off:]
+                    trace_offsets[model] = len(data)
+                    if not new:
+                        return
+
+                    text = new.decode("utf-8", errors="replace")
+                    for line in text.splitlines():
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            evt = json.loads(line)
+                        except Exception:
+                            continue
+
+                        t = evt.get("type", "")
+                        if t in (
+                            "tool_call",
+                            "tool_result",
+                            "error",
+                            "finish",
+                            "bump",
+                            "flag_confirmed",
+                        ):
+                            msg = None
+                            if t == "tool_call":
+                                msg = f"[{evt.get('step', '?')}] call {evt.get('tool', '?')}: {evt.get('args', '')!s}"
+                            elif t == "tool_result":
+                                msg = f"[{evt.get('step', '?')}] result {evt.get('tool', '?')}: {evt.get('result', '')!s}"
+                            elif t == "error":
+                                msg = f"error: {evt.get('error', '')}"
+                            elif t == "finish":
+                                msg = f"finish: {evt.get('status', '')} flag={evt.get('flag', '') or ''} cost=${evt.get('cost_usd', '')}"
+                            elif t == "bump":
+                                msg = f"bump: {evt.get('insights', '')}"
+                            elif t == "flag_confirmed":
+                                msg = f"flag confirmed: {evt.get('flag', '')}"
+
+                            if msg:
+                                bus.emit_sync(
+                                    "log_line",
+                                    {
+                                        "challenge": challenge,
+                                        "model": model,
+                                        "text": msg[:2000],
+                                        "level": "info" if t != "error" else "error",
+                                    },
+                                )
+                except Exception:
+                    return
+
             while not swarm.cancel_event.is_set():
                 await asyncio.sleep(3)
                 try:
                     status = original_get_status()
                     for model_spec, info in status.get("agents", {}).items():
+                        solver = getattr(swarm, "solvers", {}).get(model_spec)
+                        steps, cost, findings = _solver_progress(solver) if solver else (0, 0.0, "")
+
                         bus.emit_sync(
                             "solver_update",
                             {
                                 "challenge": name,
                                 "model": model_spec,
                                 "status": info.get("status", "running"),
-                                "findings": info.get("findings", ""),
+                                "steps": steps,
+                                "cost": cost,
+                                "findings": findings or info.get("findings", ""),
                             },
                         )
+
+                        # Stream trace JSONL into UI logs if available
+                        if solver is not None:
+                            tracer = getattr(solver, "tracer", None)
+                            trace_path = getattr(tracer, "path", "") if tracer else ""
+                            if trace_path:
+                                _emit_trace_lines(name, model_spec, str(trace_path))
                     # Cost update from swarm
                     bus.emit_sync(
                         "cost_update",

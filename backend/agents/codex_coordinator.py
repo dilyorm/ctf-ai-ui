@@ -149,28 +149,35 @@ class CodexCoordinator:
 
     async def start(self) -> None:
         self._proc = await asyncio.create_subprocess_exec(
-            "codex", "app-server",
+            "codex",
+            "app-server",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )
         self._reader_task = asyncio.create_task(self._read_loop())
 
-        await self._rpc("initialize", {
-            "clientInfo": {"name": "ctf-coordinator", "version": "2.0.0"},
-            "capabilities": {"experimentalApi": True},
-        })
+        await self._rpc(
+            "initialize",
+            {
+                "clientInfo": {"name": "ctf-coordinator", "version": "2.0.0"},
+                "capabilities": {"experimentalApi": True},
+            },
+        )
         await self._send_notification("initialized", {})
 
-        resp = await self._rpc("thread/start", {
-            "model": self.model,
-            "personality": "pragmatic",
-            "baseInstructions": COORDINATOR_PROMPT,
-            "cwd": ".",
-            "approvalPolicy": "on-request",
-            "sandbox": "read-only",
-            "dynamicTools": COORDINATOR_TOOLS,
-        })
+        resp = await self._rpc(
+            "thread/start",
+            {
+                "model": self.model,
+                "personality": "pragmatic",
+                "baseInstructions": COORDINATOR_PROMPT,
+                "cwd": ".",
+                "approvalPolicy": "on-request",
+                "sandbox": "read-only",
+                "dynamicTools": COORDINATOR_TOOLS,
+            },
+        )
         self._thread_id = resp.get("result", {}).get("thread", {}).get("id", "")
         logger.info(f"Codex coordinator started (thread={self._thread_id}, model={self.model})")
 
@@ -182,10 +189,13 @@ class CodexCoordinator:
         self._turn_done.clear()
         self._turn_error = None
 
-        await self._rpc("turn/start", {
-            "threadId": self._thread_id,
-            "input": [{"type": "text", "text": message}],
-        })
+        await self._rpc(
+            "turn/start",
+            {
+                "threadId": self._thread_id,
+                "input": [{"type": "text", "text": message}],
+            },
+        )
 
         try:
             await asyncio.wait_for(self._turn_done.wait(), timeout=120)
@@ -293,10 +303,13 @@ class CodexCoordinator:
         except Exception as e:
             result = f"Error: {e}"
 
-        await self._respond_to_request(request_id, {
-            "contentItems": [{"type": "inputText", "text": str(result)}],
-            "success": True,
-        })
+        await self._respond_to_request(
+            request_id,
+            {
+                "contentItems": [{"type": "inputText", "text": str(result)}],
+                "success": True,
+            },
+        )
 
     async def _dispatch_tool(self, name: str, args: dict) -> str:
         deps = self.deps
@@ -313,11 +326,15 @@ class CodexCoordinator:
         elif name == "kill_swarm":
             return await do_kill_swarm(deps, args["challenge_name"])
         elif name == "bump_agent":
-            return await do_bump_agent(deps, args["challenge_name"], args["model_spec"], args["insights"])
+            return await do_bump_agent(
+                deps, args["challenge_name"], args["model_spec"], args["insights"]
+            )
         elif name == "broadcast":
             return await do_broadcast(deps, args["challenge_name"], args["message"])
         elif name == "read_solver_trace":
-            return await do_read_solver_trace(deps, args["challenge_name"], args["model_spec"], args.get("last_n", 20))
+            return await do_read_solver_trace(
+                deps, args["challenge_name"], args["model_spec"], args.get("last_n", 20)
+            )
         else:
             return f"Unknown tool: {name}"
 
@@ -329,10 +346,20 @@ async def run_codex_coordinator(
     no_submit: bool = False,
     coordinator_model: str | None = None,
     msg_port: int = 0,
+    exclude_challenges: list[str] | None = None,
+    exclude_challenge_regex: str | None = None,
 ) -> dict[str, Any]:
     """Run the Codex coordinator with the shared event loop."""
+    excluded = set(exclude_challenges or [])
+    if exclude_challenge_regex:
+        excluded.add(f"__regex__:{exclude_challenge_regex}")
+
     ctfd, cost_tracker, deps = build_deps(
-        settings, model_specs, challenges_root, no_submit,
+        settings,
+        model_specs,
+        challenges_root,
+        no_submit,
+        exclude_challenges=excluded,
     )
     deps.msg_port = msg_port
 
@@ -346,6 +373,12 @@ async def run_codex_coordinator(
         logger.info("Codex coordinator turn done")
 
     try:
-        return await run_event_loop(deps, ctfd, cost_tracker, turn_fn)
+        return await run_event_loop(
+            deps,
+            ctfd,
+            cost_tracker,
+            turn_fn,
+            exclude_challenges=deps.excluded_challenges,
+        )
     finally:
         await coordinator.stop()

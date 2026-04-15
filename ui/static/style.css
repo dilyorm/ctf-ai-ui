@@ -124,6 +124,11 @@ body {
 .btn-github:hover { background: #32383f; }
 .btn-full { width: 100%; justify-content: center; margin-top: 8px; }
 
+.run-row { display: flex; align-items: center; justify-content: space-between; margin-top: 8px; }
+.run-label { color: var(--text3); font-size: 12px; }
+.run-value { font-weight: 600; }
+.run-actions { display: flex; gap: 8px; margin-top: 10px; }
+
 .github-icon { flex-shrink: 0; }
 
 /* ─── Layout ────────────────────────────────────────────────────── */

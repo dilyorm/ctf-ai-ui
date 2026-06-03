@@ -22,7 +22,17 @@ from datetime import UTC, datetime, timezone
 from pathlib import Path
 
 import uvicorn
-from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    Request,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -1712,6 +1722,74 @@ async def api_codex_auth_check(
         return JSONResponse({"ok": True, "status": "authenticated", "config_dir": config_dir})
 
     return JSONResponse({"ok": True, "status": "pending"})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Per-agent control (one model on one challenge)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _live_swarm(challenge: str):
+    """Return the running ChallengeSwarm for *challenge*, or None."""
+    from ui.coordinator_bridge import get_current_deps
+
+    deps = get_current_deps()
+    if not deps:
+        return None
+    return deps.swarms.get(challenge)
+
+
+@app.post("/api/run/agent/{action}")
+async def api_agent_action(
+    action: str, request: Request, user: User = Depends(_require_db_user)
+):
+    """Control a single agent: message | stop | pause | resume | restart.
+
+    Body: {challenge, model_spec, text?}. model_spec carries slashes so it's
+    passed in the body, not the path.
+    """
+    if action not in ("message", "stop", "pause", "resume", "restart"):
+        return JSONResponse({"ok": False, "error": "unknown action"}, status_code=400)
+    body = await request.json()
+    challenge = (body.get("challenge") or "").strip()
+    model_spec = (body.get("model_spec") or "").strip()
+    swarm = _live_swarm(challenge)
+    if not swarm:
+        return JSONResponse(
+            {"ok": False, "error": "no active swarm for that challenge"}, status_code=404
+        )
+    if action == "message":
+        text = (body.get("text") or "").strip()
+        if not text:
+            return JSONResponse({"ok": False, "error": "empty message"}, status_code=400)
+        ok = swarm.message_agent(model_spec, text)
+    elif action == "stop":
+        ok = swarm.stop_agent(model_spec)
+    elif action == "pause":
+        ok = swarm.pause_agent(model_spec)
+    elif action == "resume":
+        ok = swarm.resume_agent(model_spec)
+    else:  # restart
+        ok = swarm.restart_agent(model_spec)
+    return JSONResponse({"ok": bool(ok), "action": action, "model_spec": model_spec})
+
+
+@app.post("/api/run/agent/context")
+async def api_agent_context(
+    challenge: str = Form(...),
+    model_spec: str = Form(...),
+    file: UploadFile = File(...),
+    user: User = Depends(_require_db_user),
+):
+    """Upload a context file into a single agent's sandbox (/challenge/workspace)."""
+    swarm = _live_swarm(challenge.strip())
+    if not swarm:
+        return JSONResponse({"ok": False, "error": "no active swarm"}, status_code=404)
+    data = await file.read()
+    if len(data) > 25 * 1024 * 1024:
+        return JSONResponse({"ok": False, "error": "file too large (max 25MB)"}, status_code=413)
+    ok = await swarm.add_context_file(model_spec.strip(), file.filename or "context.bin", data)
+    return JSONResponse({"ok": bool(ok), "filename": file.filename})
 
 
 # ─────────────────────────────────────────────────────────────────────────────

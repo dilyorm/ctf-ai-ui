@@ -880,3 +880,14 @@ body {
   .toast, .sidebar, .right-panel, .topnav-links { transition: none; }
   .dot, .ch-status-dot.running, .spinner { animation: none; }
 }
+
+/* Per-agent controls on model cards (Phase 2; refined in redesign) */
+.model-controls { display:flex; gap:4px; margin-top:8px; flex-wrap:wrap; }
+.agent-btn {
+  display:inline-flex; align-items:center; justify-content:center;
+  min-width:26px; height:26px; padding:0 6px; cursor:pointer;
+  background:var(--bg3,#1a1a1a); color:var(--text2,#bbb);
+  border:1px solid var(--border,#2a2a2a); border-radius:6px;
+  font-size:13px; line-height:1; transition:background .15s ease, color .15s ease;
+}
+.agent-btn:hover { background:var(--bg2,#222); color:var(--text,#eee); }

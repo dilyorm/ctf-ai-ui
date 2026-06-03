@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -52,6 +53,15 @@ def _quota_fallback_spec(model_spec: str) -> str | None:
 
 
 @dataclass
+class AgentControl:
+    """Operator control surface for a single agent (one model on one challenge)."""
+
+    cancel: asyncio.Event = field(default_factory=asyncio.Event)
+    restart: asyncio.Event = field(default_factory=asyncio.Event)
+    paused: bool = False
+
+
+@dataclass
 class ChallengeSwarm:
     """Parallel solvers racing on one challenge."""
 
@@ -81,6 +91,68 @@ class ChallengeSwarm:
     parked_until: object | None = None
     _parked_specs: set = field(default_factory=set)
     _ran_specs: set = field(default_factory=set)
+
+    # Per-agent operator controls, keyed by model_spec.
+    agent_controls: dict[str, AgentControl] = field(default_factory=dict)
+
+    def _control(self, model_spec: str) -> AgentControl:
+        ctrl = self.agent_controls.get(model_spec)
+        if ctrl is None:
+            ctrl = AgentControl()
+            self.agent_controls[model_spec] = ctrl
+        return ctrl
+
+    def _cancel_all(self) -> None:
+        """Stop the whole swarm (flag found / kill): swarm event + every agent."""
+        self.cancel_event.set()
+        for c in self.agent_controls.values():
+            c.cancel.set()
+
+    # ── per-agent operator control ───────────────────────────────────────────
+
+    def message_agent(self, model_spec: str, text: str) -> bool:
+        """Inject a free-text operator instruction into one agent's next turn."""
+        solver = self.solvers.get(model_spec)
+        if not solver:
+            return False
+        solver.bump(f"OPERATOR INSTRUCTION (follow this): {text}")
+        return True
+
+    def stop_agent(self, model_spec: str) -> bool:
+        self._control(model_spec).cancel.set()
+        return model_spec in self.solvers
+
+    def pause_agent(self, model_spec: str) -> bool:
+        self._control(model_spec).paused = True
+        return model_spec in self.solvers
+
+    def resume_agent(self, model_spec: str) -> bool:
+        self._control(model_spec).paused = False
+        return model_spec in self.solvers
+
+    def restart_agent(self, model_spec: str) -> bool:
+        ctrl = self._control(model_spec)
+        ctrl.paused = False
+        ctrl.restart.set()
+        return model_spec in self.solvers
+
+    async def add_context_file(self, model_spec: str, filename: str, data: bytes) -> bool:
+        """Copy a file into this agent's sandbox (/challenge/workspace) and tell it."""
+        solver = self.solvers.get(model_spec)
+        sandbox = getattr(solver, "sandbox", None)
+        if not solver or not sandbox:
+            return False
+        safe = os.path.basename(filename) or "context.bin"
+        try:
+            await sandbox.write_file(f"/challenge/workspace/{safe}", data)
+        except Exception as e:
+            logger.warning(f"[{self.meta.name}/{model_spec}] add_context_file failed: {e}")
+            return False
+        solver.bump(
+            f"OPERATOR added a context file at /challenge/workspace/{safe} "
+            f"({len(data)} bytes). Read/use it."
+        )
+        return True
 
     def _create_solver(self, model_spec: str, lease: Lease | None = None):
         """Create the right solver type based on provider.
@@ -249,7 +321,9 @@ class ChallengeSwarm:
                     step_count=0, cost_usd=0.0, log_path="",
                 )
 
+        ctrl = self._control(model_spec)
         solver = self._create_solver(model_spec, lease=lease)
+        solver.cancel_event = ctrl.cancel  # per-agent stop, independent of swarm-wide
         self.solvers[model_spec] = solver
         self._ran_specs.add(model_spec)
 
@@ -286,7 +360,28 @@ class ChallengeSwarm:
         )
         await solver.start()
 
-        while not self.cancel_event.is_set():
+        ctrl = self._control(model_spec)
+        while not self.cancel_event.is_set() and not ctrl.cancel.is_set():
+            # Operator pause: idle between turns until resumed / stopped.
+            while ctrl.paused and not self.cancel_event.is_set() and not ctrl.cancel.is_set():
+                await asyncio.sleep(0.5)
+            if self.cancel_event.is_set() or ctrl.cancel.is_set():
+                break
+
+            # Operator restart: tear down and re-create this agent (fresh sandbox,
+            # re-leased account) without disturbing siblings.
+            if ctrl.restart.is_set():
+                ctrl.restart.clear()
+                await solver.stop()
+                if lease is not None:
+                    await pool.release(lease)
+                    lease = await pool.lease(pool_provider) if pool_provider else None
+                solver = self._create_solver(model_spec, lease=lease)
+                solver.cancel_event = ctrl.cancel
+                self.solvers[model_spec] = solver
+                await solver.start()
+                logger.info(f"[{self.meta.name}/{model_spec}] Restarted by operator")
+
             result = await solver.run_until_done_or_gave_up()
 
             # Only broadcast useful findings — skip errors and broken solvers
@@ -298,7 +393,7 @@ class ChallengeSwarm:
                 await self.message_bus.post(model_spec, result.findings_summary[:500])
 
             if result.status == FLAG_FOUND:
-                self.cancel_event.set()
+                self._cancel_all()
                 self.winner = result
                 logger.info(
                     f"[{self.meta.name}] Flag found by {model_spec}: {result.flag}"
@@ -335,6 +430,7 @@ class ChallengeSwarm:
                     )
                     lease = next_lease
                     solver = self._create_solver(model_spec, lease=lease)
+                    solver.cancel_event = ctrl.cancel
                     self.solvers[model_spec] = solver
                     await solver.start()
                     continue
@@ -433,7 +529,7 @@ class ChallengeSwarm:
                     except Exception:
                         continue
                     if result and result.status == FLAG_FOUND:
-                        self.cancel_event.set()
+                        self._cancel_all()
                         for p in pending:
                             p.cancel()
                         await asyncio.gather(*pending, return_exceptions=True)
@@ -441,12 +537,12 @@ class ChallengeSwarm:
 
                 tasks = list(pending)
 
-            self.cancel_event.set()
+            self._cancel_all()
             self._compute_parked_until()
             return self.winner
         except Exception as e:
             logger.error(f"[{self.meta.name}] Swarm error: {e}", exc_info=True)
-            self.cancel_event.set()
+            self._cancel_all()
             for t in tasks:
                 t.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
@@ -454,7 +550,19 @@ class ChallengeSwarm:
 
     def kill(self) -> None:
         """Cancel all agents for this challenge."""
-        self.cancel_event.set()
+        self._cancel_all()
+
+    def _agent_status(self, spec: str) -> str:
+        ctrl = self.agent_controls.get(spec)
+        if ctrl and ctrl.cancel.is_set() and not self.cancel_event.is_set():
+            return "stopped"
+        if ctrl and ctrl.paused:
+            return "paused"
+        if self.winner and self.winner.flag:
+            return "won"
+        if spec in self.solvers and not self.cancel_event.is_set():
+            return "running"
+        return "finished"
 
     def get_status(self) -> dict:
         """Get per-agent progress and findings."""
@@ -465,8 +573,9 @@ class ChallengeSwarm:
             "agents": {
                 spec: {
                     "findings": self.findings.get(spec, ""),
-                    "status": "running" if spec in self.solvers and not self.cancel_event.is_set()
-                             else ("won" if self.winner and self.winner.flag else "finished"),
+                    "status": self._agent_status(spec),
+                    "paused": bool(spec in self.agent_controls and self.agent_controls[spec].paused),
+                    "stopped": bool(spec in self.agent_controls and self.agent_controls[spec].cancel.is_set()),
                 }
                 for spec in self.model_specs
             },

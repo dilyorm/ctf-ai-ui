@@ -22,6 +22,10 @@ logger = logging.getLogger(__name__)
 # Global operator inbox — set when coordinator starts
 _operator_inbox: asyncio.Queue | None = None
 
+# Live coordinator deps for the active run — lets the web API reach running
+# swarms (per-agent control). Same process + event loop as the run task.
+_current_deps: Any = None
+
 
 def get_operator_inbox() -> asyncio.Queue | None:
     return _operator_inbox
@@ -30,6 +34,15 @@ def get_operator_inbox() -> asyncio.Queue | None:
 def set_operator_inbox(inbox: asyncio.Queue) -> None:
     global _operator_inbox
     _operator_inbox = inbox
+
+
+def get_current_deps() -> Any:
+    return _current_deps
+
+
+def set_current_deps(deps: Any) -> None:
+    global _current_deps
+    _current_deps = deps
 
 
 class UILogHandler(logging.Handler):
@@ -80,8 +93,10 @@ def install_bridge(deps: Any, cost_tracker: Any) -> None:
 
     bus = get_bus()
 
-    # Store the operator inbox so the UI can send messages
+    # Store the operator inbox + live deps so the UI can send messages and
+    # reach running swarms for per-agent control.
     set_operator_inbox(deps.operator_inbox)
+    set_current_deps(deps)
 
     # Update CTFd status
     bus.emit_sync(

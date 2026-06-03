@@ -353,9 +353,57 @@ function updateModelsGrid(ch) {
         </div>
         ${info.steps ? `<div class="model-stats">${info.steps} steps${info.cost ? " · $" + info.cost.toFixed(4) : ""}</div>` : ""}
         ${info.findings ? `<div class="model-findings">${escHtml(info.findings.substring(0, 200))}</div>` : ""}
+        <div class="model-controls" data-spec="${escHtml(spec)}">
+          <button class="agent-btn" data-act="message" title="Send instruction">✎</button>
+          <button class="agent-btn" data-act="${info.paused ? "resume" : "pause"}" title="${info.paused ? "Resume" : "Pause"}">${info.paused ? "▶" : "⏸"}</button>
+          <button class="agent-btn" data-act="restart" title="Restart agent">↻</button>
+          <button class="agent-btn" data-act="stop" title="Stop agent">⏹</button>
+          <label class="agent-btn" title="Attach context file">📎<input type="file" data-act="context" hidden></label>
+        </div>
       </div>
     `;
   }).join("");
+  wireAgentControls();
+}
+
+let _agentControlsWired = false;
+function wireAgentControls() {
+  if (_agentControlsWired || !modelsGrid) return;
+  _agentControlsWired = true;
+
+  async function post(action, spec, extra) {
+    await fetch(`/api/run/agent/${action}`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ challenge: state.selectedChallenge, model_spec: spec, ...extra }),
+    });
+  }
+
+  modelsGrid.addEventListener("click", async (e) => {
+    const btn = e.target.closest(".agent-btn[data-act]");
+    if (!btn) return;
+    const act = btn.dataset.act;
+    if (act === "context") return; // handled by file input change
+    const spec = btn.closest(".model-controls")?.dataset.spec;
+    if (!spec) return;
+    if (act === "message") {
+      const text = prompt(`Instruction for ${spec.split("/").pop()}:`);
+      if (text) await post("message", spec, { text });
+    } else {
+      await post(act, spec, {});
+    }
+  });
+
+  modelsGrid.addEventListener("change", async (e) => {
+    const input = e.target;
+    if (input.dataset?.act !== "context" || !input.files?.length) return;
+    const spec = input.closest(".model-controls")?.dataset.spec;
+    const fd = new FormData();
+    fd.append("challenge", state.selectedChallenge);
+    fd.append("model_spec", spec);
+    fd.append("file", input.files[0]);
+    await fetch("/api/run/agent/context", { method: "POST", body: fd });
+    input.value = "";
+  });
 }
 
 // ── Logs ───────────────────────────────────────────────────────────

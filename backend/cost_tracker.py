@@ -18,11 +18,22 @@ PROVIDER_MAP: dict[str, str] = {
     "azure": "openai",
     "zen": "openai",
     "codex": "openai",
+    "copilot": "openai",
     "google": "google",
 }
 
 # Fallback pricing for models not in genai-prices (per 1M tokens, USD)
 FALLBACK_PRICING: dict[str, dict[str, float]] = {
+    "us.anthropic.claude-opus-4-7-v1": {
+        "input": 5.00,
+        "cached_input": 0.50,
+        "output": 25.00,
+    },
+    "claude-opus-4-7": {
+        "input": 5.00,
+        "cached_input": 0.50,
+        "output": 25.00,
+    },
     "us.anthropic.claude-opus-4-6-v1": {
         "input": 5.00,
         "cached_input": 0.50,

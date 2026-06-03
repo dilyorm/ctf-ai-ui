@@ -62,7 +62,7 @@ def _setup_logging(verbose: bool = False) -> None:
     help="Claude config dir (subscription mode). Overrides CLAUDE_CONFIG_DIR.",
 )
 @click.option(
-    "--coordinator-model", default=None, help="Model for coordinator (default: claude-opus-4-6)"
+    "--coordinator-model", default=None, help="Model for coordinator (default: claude-opus-4-7)"
 )
 @click.option(
     "--coordinator",
@@ -436,6 +436,90 @@ def msg(message: str, port: int, host: str) -> None:
         console.print(f"[red]Failed:[/red] {e}")
         console.print("Is the coordinator running?")
         sys.exit(1)
+
+
+@click.group()
+def admin() -> None:
+    """Admin operations (user management)."""
+
+
+@admin.command("create-admin")
+@click.option("--email", required=True, help="Admin email address")
+@click.option(
+    "--password",
+    required=True,
+    prompt=True,
+    hide_input=True,
+    confirmation_prompt=True,
+    help="Admin password (min 8 chars)",
+)
+@click.option("--display-name", default="", help="Optional display name")
+def admin_create(email: str, password: str, display_name: str) -> None:
+    """Create (or promote) an admin user.
+
+    Idempotent: if the email already exists, promotes them to admin and
+    resets the password to the provided value.
+    """
+    import asyncio
+
+    from sqlalchemy import select
+
+    from backend.auth import hash_password
+    from backend.db import SessionLocal
+    from backend.db_models import User
+
+    async def _run() -> None:
+        email_n = email.strip().lower()
+        if len(password) < 8:
+            raise click.ClickException("Password must be at least 8 characters.")
+        async with SessionLocal() as db:
+            existing = (
+                await db.execute(select(User).where(User.email == email_n))
+            ).scalar_one_or_none()
+            if existing:
+                existing.role = "admin"
+                existing.is_active = True
+                existing.password_hash = hash_password(password)
+                if display_name:
+                    existing.display_name = display_name
+                await db.commit()
+                console.print(f"[green]Promoted {email_n} to admin; password reset.[/green]")
+                return
+            user = User(
+                email=email_n,
+                password_hash=hash_password(password),
+                role="admin",
+                is_active=True,
+                display_name=display_name or email_n.split("@")[0],
+            )
+            db.add(user)
+            await db.commit()
+            console.print(f"[green]Created admin {email_n}.[/green]")
+
+    asyncio.run(_run())
+
+
+@admin.command("list-users")
+def admin_list_users() -> None:
+    """List all users and their roles."""
+    import asyncio
+
+    from sqlalchemy import select
+
+    from backend.db import SessionLocal
+    from backend.db_models import User
+
+    async def _run() -> None:
+        async with SessionLocal() as db:
+            rows = (await db.execute(select(User).order_by(User.id))).scalars().all()
+            if not rows:
+                console.print("[yellow]No users.[/yellow]")
+                return
+            for u in rows:
+                active = "✓" if u.is_active else "✗"
+                console.print(f"  #{u.id:<4} {u.email:<40} role={u.role:<6} active={active}")
+
+    asyncio.run(_run())
 
 
 if __name__ == "__main__":

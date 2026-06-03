@@ -165,7 +165,7 @@ async def run_claude_coordinator(
     deps.msg_port = msg_port
 
     mcp_server = _build_coordinator_mcp(deps)
-    resolved_model = coordinator_model or "claude-opus-4-6"
+    resolved_model = coordinator_model or "claude-opus-4-7"
 
     allowed = {
         "mcp__coordinator__fetch_challenges",

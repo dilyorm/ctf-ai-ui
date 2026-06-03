@@ -10,6 +10,7 @@
 
   <!-- ── Nav ──────────────────────────────────────────────────────────── -->
   <nav class="topnav">
+    <button class="nav-toggle" id="nav-toggle" aria-label="Toggle menu" aria-expanded="false">☰</button>
     <div class="topnav-brand">
       <span class="brand-icon">⚡</span>
       <span class="brand-name">CTF Agent</span>
@@ -17,7 +18,9 @@
     <div class="topnav-links">
       <a href="/" class="nav-link">Dashboard</a>
       <a href="/ctfs" class="nav-link active">CTFs</a>
+      <a href="/team" class="nav-link">Team</a>
       <a href="/settings" class="nav-link">Settings</a>
+      {% if user.role == "admin" %}<a href="/admin" class="nav-link">Admin</a>{% endif %}
     </div>
     <div class="topnav-user">
       <span class="nav-email">{{ user.email or user.login }}</span>
@@ -43,7 +46,10 @@
         <div class="ctf-card-header">
           <span class="ctf-icon">🏁</span>
           <div class="ctf-card-meta">
-            <h3 class="ctf-card-name">{{ ctf.name }}</h3>
+            <h3 class="ctf-card-name">
+              {{ ctf.name }}
+              <span class="platform-badge platform-{{ ctf.platform }}">{{ ctf.platform }}</span>
+            </h3>
             <span class="ctf-card-date">Added {{ ctf.created_at }}</span>
           </div>
         </div>
@@ -80,13 +86,20 @@
           <input type="text" id="new-ctf-name" placeholder="e.g. PicoCTF 2025" />
         </div>
         <div class="form-group">
-          <label>CTFd URL <span class="required">*</span></label>
+          <label>Platform <span class="required">*</span></label>
+          <select id="new-ctf-platform">
+            <option value="ctfd">CTFd</option>
+            <option value="rctf">rCTF</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>URL <span class="required">*</span></label>
           <input type="url" id="new-ctf-url" placeholder="https://ctf.example.com" />
         </div>
         <div class="form-group">
-          <label>CTFd API Token</label>
-          <input type="password" id="new-ctf-token" placeholder="ctfd_your_token_here" autocomplete="new-password" />
-          <span class="field-hint">Generate from CTFd Settings → Access Tokens.</span>
+          <label>API Token</label>
+          <input type="password" id="new-ctf-token" placeholder="your access token" autocomplete="new-password" />
+          <span class="field-hint" id="new-ctf-token-hint">CTFd: Settings → Access Tokens. rCTF: copy your login token from your profile.</span>
         </div>
         <div id="new-ctf-error" class="form-error" style="display:none"></div>
       </div>
@@ -97,19 +110,28 @@
     </div>
   </div>
 
+  <script src="/static/common.js"></script>
   <script>
   "use strict";
 
   const modal = document.getElementById("new-ctf-modal");
   const errBox = document.getElementById("new-ctf-error");
+  const nameInput = document.getElementById("new-ctf-name");
+  const urlInput  = document.getElementById("new-ctf-url");
+  const tokenInput = document.getElementById("new-ctf-token");
+  const platformInput = document.getElementById("new-ctf-platform");
 
-  function openModal() { modal.style.display = "flex"; }
+  function openModal() {
+    modal.style.display = "flex";
+    setTimeout(() => nameInput.focus(), 30);
+  }
   function closeModal() {
     modal.style.display = "none";
     errBox.style.display = "none";
-    document.getElementById("new-ctf-name").value = "";
-    document.getElementById("new-ctf-url").value = "";
-    document.getElementById("new-ctf-token").value = "";
+    nameInput.value = "";
+    urlInput.value = "";
+    tokenInput.value = "";
+    platformInput.value = "ctfd";
   }
 
   document.getElementById("btn-new-ctf")?.addEventListener("click", openModal);
@@ -117,61 +139,130 @@
   document.getElementById("modal-close").addEventListener("click", closeModal);
   document.getElementById("btn-cancel-new-ctf").addEventListener("click", closeModal);
   modal.addEventListener("click", e => { if (e.target === modal) closeModal(); });
+  document.addEventListener("keydown", e => {
+    if (e.key === "Escape" && modal.style.display === "flex") closeModal();
+  });
 
-  document.getElementById("btn-save-new-ctf").addEventListener("click", async () => {
-    const name = document.getElementById("new-ctf-name").value.trim();
-    const url = document.getElementById("new-ctf-url").value.trim();
-    const token = document.getElementById("new-ctf-token").value.trim();
+  async function saveNewCtf() {
+    const name = nameInput.value.trim();
+    const url = urlInput.value.trim();
+    const token = tokenInput.value.trim();
     if (!name || !url) {
       errBox.textContent = "Name and URL are required.";
       errBox.style.display = "block";
       return;
     }
     const btn = document.getElementById("btn-save-new-ctf");
-    btn.disabled = true;
-    btn.textContent = "Saving…";
+    const release = window.setBusy(btn, true, "Saving…");
     try {
       const res = await fetch("/api/ctfs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, ctfd_url: url, ctfd_token: token }),
+        body: JSON.stringify({
+          name,
+          platform: platformInput.value || "ctfd",
+          ctfd_url: url,
+          ctfd_token: token,
+        }),
       });
       const data = await res.json();
       if (data.ok) {
-        location.reload();
+        window.toast(`CTF "${name}" added`, "success");
+        setTimeout(() => location.reload(), 400);
       } else {
         errBox.textContent = data.error || "Failed to create CTF.";
         errBox.style.display = "block";
+        release();
       }
     } catch {
       errBox.textContent = "Network error.";
       errBox.style.display = "block";
-    } finally {
-      btn.disabled = false;
-      btn.textContent = "Add CTF";
+      release();
+    }
+  }
+  document.getElementById("btn-save-new-ctf").addEventListener("click", saveNewCtf);
+  // Enter in any modal field saves
+  [nameInput, urlInput, tokenInput].forEach(el => {
+    el.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); saveNewCtf(); } });
+  });
+
+  // Platform-aware token hint
+  platformInput.addEventListener("change", () => {
+    const hint = document.getElementById("new-ctf-token-hint");
+    if (platformInput.value === "rctf") {
+      hint.textContent = "rCTF: copy the team login token from your profile page (Authorization: Bearer …).";
+    } else {
+      hint.textContent = "CTFd: generate from Settings → Access Tokens.";
     }
   });
 
-  // Delete CTF
+  // Delete CTF — uses the shared confirm modal + toasts
   document.querySelectorAll(".btn-delete-ctf").forEach(btn => {
     btn.addEventListener("click", async () => {
       const id = btn.dataset.id;
       const name = btn.dataset.name;
-      if (!confirm(`Delete "${name}"? This cannot be undone.`)) return;
+      // Warn if a run is currently active.
+      let runWarning = "";
+      try {
+        const st = await fetch("/api/run/status").then(r => r.json());
+        if (st.ok && st.status?.running) {
+          runWarning = `<div style="margin-top:8px;color:var(--orange)">⚠ A solver run is currently active. Stopping it first is recommended.</div>`;
+        }
+      } catch { /* ignore */ }
+
+      const ok = await window.confirmDialog({
+        title: "Delete this CTF?",
+        body: `Permanently delete <strong>${escapeHtml(name)}</strong>? This cannot be undone — saved CTFd credentials for this instance will be removed.${runWarning}`,
+        confirmText: "Delete CTF",
+        cancelText: "Keep",
+        icon: "🗑",
+        danger: true,
+      });
+      if (!ok) return;
+
+      const release = window.setBusy(btn, true, "Deleting…");
       try {
         const res = await fetch(`/api/ctfs/${id}`, { method: "DELETE" });
         const data = await res.json();
         if (data.ok) {
-          btn.closest(".ctf-card").remove();
-          if (!document.querySelector(".ctf-card")) location.reload();
+          window.toast(`Deleted "${name}"`, "success");
+          const card = btn.closest(".ctf-card");
+          card.style.transition = "opacity .2s, transform .2s";
+          card.style.opacity = "0";
+          card.style.transform = "scale(.96)";
+          setTimeout(() => {
+            card.remove();
+            if (!document.querySelector(".ctf-card")) location.reload();
+          }, 220);
         } else {
-          alert(data.error || "Delete failed.");
+          window.toast(data.error || "Delete failed", "error");
+          release();
         }
       } catch {
-        alert("Network error.");
+        window.toast("Network error", "error");
+        release();
       }
     });
   });
+
+  function escapeHtml(s) {
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
   </script>
+  <style>
+    .platform-badge {
+      display: inline-block;
+      font-size: .7em;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 10px;
+      margin-left: .5em;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+      vertical-align: middle;
+    }
+    .platform-ctfd { background: rgba(95,145,255,.15); color: #5f91ff; }
+    .platform-rctf { background: rgba(255,170,64,.18); color: #ffaa40; }
+  </style>
 </body>
 </html>

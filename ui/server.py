@@ -38,6 +38,7 @@ from backend.db_models import User, UserModelPref, UserSettings
 from backend.models import ALL_MODELS, DEFAULT_MODELS
 from backend.run_manager import get_run_manager
 from ui.event_bus import get_bus
+from ui.team_routes import register_team_routes
 from ui.github_auth import (
     build_authorize_url,
     exchange_code_for_token,
@@ -95,6 +96,13 @@ async def _require_user(request: Request, db: AsyncSession = Depends(get_db)) ->
 
 async def _require_db_user(request: Request, db: AsyncSession = Depends(get_db)) -> User:
     return await _require_user(request, db)
+
+
+async def _require_admin(request: Request, db: AsyncSession = Depends(get_db)) -> User:
+    user = await _require_user(request, db)
+    if user.role != "admin":
+        raise HTTPException(status_code=403, detail="admin only")
+    return user
 
 
 def _require_user_redirect(request: Request):
@@ -168,6 +176,7 @@ async def settings_page(request: Request, db: AsyncSession = Depends(get_db)):
             "has_anthropic": bool(st.anthropic_api_key_enc),
             "has_openai": bool(st.openai_api_key_enc),
             "has_gemini": bool(st.gemini_api_key_enc),
+            "has_copilot": bool(getattr(st, "github_copilot_oauth_token_enc", b"")),
         }
 
     # Load model prefs
@@ -214,6 +223,7 @@ async def ctfs_page(request: Request, db: AsyncSession = Depends(get_db)):
         {
             "id": c.id,
             "name": c.name,
+            "platform": (c.platform or "ctfd"),
             "ctfd_url": c.ctfd_url,
             "created_at": c.created_at.strftime("%Y-%m-%d"),
         }
@@ -227,6 +237,26 @@ async def ctfs_page(request: Request, db: AsyncSession = Depends(get_db)):
     )
 
 
+@app.get("/admin", response_class=HTMLResponse)
+async def admin_page(request: Request, db: AsyncSession = Depends(get_db)):
+    sess = _get_user(request)
+    if not sess:
+        return RedirectResponse("/login")
+    me = await db.get(User, int(sess["user_id"]))
+    if not me or me.role != "admin":
+        return templates.TemplateResponse(
+            request=request,
+            name="error.html",
+            context={"message": "Admin access required."},
+            status_code=403,
+        )
+    return templates.TemplateResponse(
+        request=request,
+        name="admin.html",
+        context={"user": sess},
+    )
+
+
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
     if _get_user(request):
@@ -236,55 +266,6 @@ async def login_page(request: Request):
         name="login.html",
         context={"error": "", "github_login_enabled": bool(GITHUB_CLIENT_ID)},
     )
-
-
-@app.get("/register", response_class=HTMLResponse)
-async def register_page(request: Request):
-    if _get_user(request):
-        return RedirectResponse("/")
-    return templates.TemplateResponse(
-        request=request,
-        name="register.html",
-        context={"error": "", "github_login_enabled": bool(GITHUB_CLIENT_ID)},
-    )
-
-
-@app.post("/register")
-async def register_post(request: Request, db: AsyncSession = Depends(get_db)):
-    form = await request.form()
-    email = (form.get("email") or "").strip().lower()
-    pw = (form.get("password") or "").strip()
-    if not email or not pw or len(pw) < 8:
-        return templates.TemplateResponse(
-            request=request,
-            name="register.html",
-            context={
-                "error": "Invalid email or password (min 8 chars).",
-                "github_login_enabled": bool(GITHUB_CLIENT_ID),
-            },
-            status_code=400,
-        )
-
-    exists = (await db.execute(select(User).where(User.email == email))).scalar_one_or_none()
-    if exists:
-        return templates.TemplateResponse(
-            request=request,
-            name="register.html",
-            context={
-                "error": "Email already registered.",
-                "github_login_enabled": bool(GITHUB_CLIENT_ID),
-            },
-            status_code=400,
-        )
-
-    user = User(email=email, password_hash=hash_password(pw))
-    db.add(user)
-    await db.commit()
-    await db.refresh(user)
-
-    request.session["user"] = {"user_id": user.id, "email": user.email}
-    # New users go to settings to configure their keys
-    return RedirectResponse("/settings", status_code=303)
 
 
 @app.post("/login")
@@ -303,7 +284,12 @@ async def login_post(request: Request, db: AsyncSession = Depends(get_db)):
             },
             status_code=401,
         )
-    request.session["user"] = {"user_id": user.id, "email": user.email}
+    request.session["user"] = {
+        "user_id": user.id,
+        "email": user.email,
+        "role": user.role,
+        "name": user.display_name or user.email.split("@")[0],
+    }
     return RedirectResponse("/", status_code=303)
 
 
@@ -361,24 +347,32 @@ async def github_callback(request: Request, code: str = "", state: str = "", err
             status_code=400,
         )
 
-    # Create or find DB user for GitHub login
+    # Login-only: admin creates accounts. GitHub OAuth must match an existing
+    # account by email (no auto-provisioning).
     from backend.db import SessionLocal
 
     async with SessionLocal() as db:
-        gh_email = gh_user.get("email") or f"github_{gh_user.get('id')}@github.local"
-        db_user = (
-            await db.execute(select(User).where(User.email == gh_email))
-        ).scalar_one_or_none()
-        if not db_user:
-            db_user = User(email=gh_email, password_hash="")
-            db.add(db_user)
-            await db.commit()
-            await db.refresh(db_user)
+        gh_email = (gh_user.get("email") or "").strip().lower()
+        db_user = None
+        if gh_email:
+            db_user = (
+                await db.execute(select(User).where(User.email == gh_email))
+            ).scalar_one_or_none()
+        if not db_user or not db_user.is_active:
+            return templates.TemplateResponse(
+                request=request,
+                name="error.html",
+                context={
+                    "message": "No account for this GitHub email. Ask an admin to create one."
+                },
+                status_code=403,
+            )
         request.session["user"] = {
             "user_id": db_user.id,
             "email": db_user.email,
+            "role": db_user.role,
             "login": gh_user.get("login"),
-            "name": gh_user.get("name"),
+            "name": db_user.display_name or gh_user.get("name") or gh_user.get("login"),
             "avatar_url": gh_user.get("avatar_url"),
         }
 
@@ -400,6 +394,160 @@ async def auth_me(request: Request):
     return JSONResponse(
         {"authenticated": True, "user": {k: v for k, v in user.items() if k != "access_token"}}
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Admin API (user CRUD — admin role only)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@app.get("/api/admin/users")
+async def api_admin_list_users(
+    admin: User = Depends(_require_admin), db: AsyncSession = Depends(get_db)
+):
+    rows = (await db.execute(select(User).order_by(User.id))).scalars().all()
+    return JSONResponse(
+        {
+            "ok": True,
+            "users": [
+                {
+                    "id": u.id,
+                    "email": u.email,
+                    "display_name": u.display_name,
+                    "role": u.role,
+                    "is_active": u.is_active,
+                    "created_at": u.created_at.isoformat() if u.created_at else None,
+                }
+                for u in rows
+            ],
+        }
+    )
+
+
+@app.post("/api/admin/users")
+async def api_admin_create_user(
+    request: Request,
+    admin: User = Depends(_require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    body = await request.json()
+    email = (body.get("email") or "").strip().lower()
+    password = (body.get("password") or "").strip()
+    role = (body.get("role") or "member").strip()
+    display_name = (body.get("display_name") or "").strip()
+
+    if not email or not password or len(password) < 8:
+        return JSONResponse(
+            {"ok": False, "error": "email and password (min 8 chars) required"}, status_code=400
+        )
+    if role not in ("admin", "member"):
+        return JSONResponse({"ok": False, "error": "invalid role"}, status_code=400)
+
+    exists = (await db.execute(select(User).where(User.email == email))).scalar_one_or_none()
+    if exists:
+        return JSONResponse({"ok": False, "error": "email already exists"}, status_code=409)
+
+    user = User(
+        email=email,
+        password_hash=hash_password(password),
+        role=role,
+        display_name=display_name,
+        is_active=True,
+    )
+    db.add(user)
+    await db.commit()
+    await db.refresh(user)
+    return JSONResponse(
+        {
+            "ok": True,
+            "user": {
+                "id": user.id,
+                "email": user.email,
+                "display_name": user.display_name,
+                "role": user.role,
+                "is_active": user.is_active,
+            },
+        },
+        status_code=201,
+    )
+
+
+@app.patch("/api/admin/users/{user_id}")
+async def api_admin_update_user(
+    user_id: int,
+    request: Request,
+    admin: User = Depends(_require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    body = await request.json()
+    target = await db.get(User, user_id)
+    if not target:
+        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+
+    if "role" in body:
+        new_role = (body["role"] or "").strip()
+        if new_role not in ("admin", "member"):
+            return JSONResponse({"ok": False, "error": "invalid role"}, status_code=400)
+        # Don't let the last admin demote themselves and lock the system.
+        if target.id == admin.id and new_role != "admin":
+            admin_count = (
+                await db.execute(
+                    select(User).where(User.role == "admin", User.is_active.is_(True))
+                )
+            ).scalars().all()
+            if len(admin_count) <= 1:
+                return JSONResponse(
+                    {"ok": False, "error": "cannot demote the only active admin"},
+                    status_code=400,
+                )
+        target.role = new_role
+    if "is_active" in body:
+        new_active = bool(body["is_active"])
+        if target.id == admin.id and not new_active:
+            return JSONResponse(
+                {"ok": False, "error": "cannot deactivate yourself"}, status_code=400
+            )
+        target.is_active = new_active
+    if "display_name" in body:
+        target.display_name = (body["display_name"] or "").strip()
+    if "password" in body and body["password"]:
+        pw = str(body["password"]).strip()
+        if len(pw) < 8:
+            return JSONResponse(
+                {"ok": False, "error": "password must be at least 8 chars"}, status_code=400
+            )
+        target.password_hash = hash_password(pw)
+
+    await db.commit()
+    await db.refresh(target)
+    return JSONResponse(
+        {
+            "ok": True,
+            "user": {
+                "id": target.id,
+                "email": target.email,
+                "display_name": target.display_name,
+                "role": target.role,
+                "is_active": target.is_active,
+            },
+        }
+    )
+
+
+@app.delete("/api/admin/users/{user_id}")
+async def api_admin_delete_user(
+    user_id: int,
+    admin: User = Depends(_require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    target = await db.get(User, user_id)
+    if not target:
+        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+    if target.id == admin.id:
+        return JSONResponse({"ok": False, "error": "cannot delete yourself"}, status_code=400)
+    await db.delete(target)
+    await db.commit()
+    return JSONResponse({"ok": True})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -428,6 +576,7 @@ async def api_get_config(
                 "has_anthropic_key": bool(st.anthropic_api_key_enc),
                 "has_openai_key": bool(st.openai_api_key_enc),
                 "has_gemini_key": bool(st.gemini_api_key_enc),
+                "has_copilot_token": bool(getattr(st, "github_copilot_oauth_token_enc", b"")),
             },
         }
     )
@@ -479,6 +628,9 @@ async def api_config(
             st.gemini_api_key_enc = seal_opt(raw)
             if raw:
                 os.environ["GEMINI_API_KEY"] = raw
+        if "github_copilot_oauth_token" in body:
+            raw = (body["github_copilot_oauth_token"] or "").strip()
+            st.github_copilot_oauth_token_enc = seal_opt(raw)
     except Exception as e:
         return JSONResponse(
             {"ok": False, "error": str(e), "hint": "Set APP_SECRET_KEY."}, status_code=500
@@ -487,6 +639,137 @@ async def api_config(
     st.updated_at = datetime.now(timezone.utc)
     await db.commit()
     return JSONResponse({"ok": True})
+
+
+@app.get("/api/settings/copilot/models")
+async def api_copilot_test(
+    user: User = Depends(_require_db_user), db: AsyncSession = Depends(get_db)
+):
+    """Verify the saved GitHub Copilot OAuth token by exchanging it for a
+    Copilot session token and listing the models the account has access to.
+    Use this from the Settings page to check the credential before adding
+    ``copilot/<model>`` specs to the model picker."""
+    st = await db.get(UserSettings, user.id)
+    oauth = open_opt(getattr(st, "github_copilot_oauth_token_enc", b"")) if st else ""
+    if not oauth:
+        return JSONResponse(
+            {"ok": False, "error": "no GitHub Copilot OAuth token saved"},
+            status_code=400,
+        )
+    try:
+        from backend.copilot_auth import list_models
+
+        models = list_models(oauth)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=502)
+    # Surface a compact view: id, vendor, capabilities.chat (when present).
+    out = []
+    for m in models:
+        out.append(
+            {
+                "id": m.get("id") or m.get("name") or "",
+                "vendor": m.get("vendor") or m.get("vendor_name") or "",
+                "name": m.get("name") or m.get("id") or "",
+                "supports_chat": bool(
+                    (m.get("capabilities") or {}).get("type") == "chat"
+                    or (m.get("capabilities") or {}).get("supports", {}).get("streaming")
+                ),
+                "model_picker_enabled": bool(m.get("model_picker_enabled", True)),
+            }
+        )
+    return JSONResponse({"ok": True, "models": out})
+
+
+@app.post("/api/auth/copilot/device/start")
+async def api_copilot_device_start(
+    request: Request, user: User = Depends(_require_db_user)
+):
+    """Begin GitHub OAuth Device Flow for Copilot. Returns user_code +
+    verification_uri the user enters at github.com/login/device, plus a
+    poll interval. The device_code is stashed in the session — never sent
+    to the browser."""
+    from backend.copilot_auth import start_device_flow, CopilotAuthError
+
+    try:
+        data = await start_device_flow()
+    except CopilotAuthError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=502)
+
+    request.session["copilot_device_code"] = data["device_code"]
+    return JSONResponse(
+        {
+            "ok": True,
+            "user_code": data["user_code"],
+            "verification_uri": data.get("verification_uri") or "https://github.com/login/device",
+            "interval": int(data.get("interval", 5)),
+            "expires_in": int(data.get("expires_in", 900)),
+        }
+    )
+
+
+@app.post("/api/auth/copilot/device/poll")
+async def api_copilot_device_poll(
+    request: Request,
+    user: User = Depends(_require_db_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Poll GitHub for the access token. On success, encrypts and stores
+    the token in UserSettings.github_copilot_oauth_token_enc and verifies
+    it works against the Copilot session-token endpoint."""
+    from backend.copilot_auth import (
+        poll_device_flow,
+        get_session_token,
+        CopilotAuthError,
+    )
+
+    device_code = request.session.get("copilot_device_code")
+    if not device_code:
+        return JSONResponse(
+            {"ok": False, "error": "No device flow in progress. Click Sign in again."},
+            status_code=400,
+        )
+
+    try:
+        result = await poll_device_flow(device_code)
+    except CopilotAuthError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=502)
+
+    status = result.get("status")
+    if status in ("pending", "slow_down"):
+        return JSONResponse({"ok": True, "status": status})
+    if status in ("expired", "denied"):
+        request.session.pop("copilot_device_code", None)
+        return JSONResponse({"ok": True, "status": status})
+    if status != "ok":
+        return JSONResponse({"ok": False, "error": f"unexpected status: {status}"}, status_code=500)
+
+    token = result["access_token"]
+
+    # Verify the freshly minted token actually has Copilot access before saving.
+    try:
+        await asyncio.to_thread(get_session_token, token)
+    except CopilotAuthError as e:
+        request.session.pop("copilot_device_code", None)
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": (
+                    "GitHub authorized us, but the account doesn't have Copilot "
+                    f"access: {e}"
+                ),
+            },
+            status_code=502,
+        )
+
+    st = await db.get(UserSettings, user.id)
+    if not st:
+        st = UserSettings(user_id=user.id)
+        db.add(st)
+    st.github_copilot_oauth_token_enc = seal_opt(token)
+    st.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    request.session.pop("copilot_device_code", None)
+    return JSONResponse({"ok": True, "status": "connected"})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -512,6 +795,7 @@ async def api_list_ctfs(user: User = Depends(_require_db_user), db: AsyncSession
                 {
                     "id": c.id,
                     "name": c.name,
+                    "platform": c.platform or "ctfd",
                     "ctfd_url": c.ctfd_url,
                     "created_at": c.created_at.isoformat(),
                 }
@@ -527,17 +811,24 @@ async def api_create_ctf(
     user: User = Depends(_require_db_user),
     db: AsyncSession = Depends(get_db),
 ):
+    from backend.platforms import SUPPORTED_PLATFORMS
+
     body = await request.json()
     name = (body.get("name") or "").strip()
-    ctfd_url = (body.get("ctfd_url") or "").strip()
-    ctfd_token = (body.get("ctfd_token") or "").strip()
+    ctfd_url = (body.get("ctfd_url") or body.get("url") or "").strip()
+    ctfd_token = (body.get("ctfd_token") or body.get("token") or "").strip()
+    platform = (body.get("platform") or "ctfd").strip().lower()
 
+    if platform not in SUPPORTED_PLATFORMS:
+        return JSONResponse(
+            {"ok": False, "error": f"platform must be one of {SUPPORTED_PLATFORMS}"},
+            status_code=400,
+        )
     if not name or not ctfd_url:
         return JSONResponse(
-            {"ok": False, "error": "name and ctfd_url are required"}, status_code=400
+            {"ok": False, "error": "name and URL are required"}, status_code=400
         )
 
-    # Check for duplicate name
     existing = (
         await db.execute(select(CTFModel).where(CTFModel.user_id == user.id, CTFModel.name == name))
     ).scalar_one_or_none()
@@ -553,7 +844,13 @@ async def api_create_ctf(
             {"ok": False, "error": str(e), "hint": "Set APP_SECRET_KEY."}, status_code=500
         )
 
-    ctf = CTFModel(user_id=user.id, name=name, ctfd_url=ctfd_url, ctfd_token_enc=token_enc)
+    ctf = CTFModel(
+        user_id=user.id,
+        name=name,
+        platform=platform,
+        ctfd_url=ctfd_url,
+        ctfd_token_enc=token_enc,
+    )
     db.add(ctf)
     await db.commit()
     await db.refresh(ctf)
@@ -561,7 +858,12 @@ async def api_create_ctf(
     return JSONResponse(
         {
             "ok": True,
-            "ctf": {"id": ctf.id, "name": ctf.name, "ctfd_url": ctf.ctfd_url},
+            "ctf": {
+                "id": ctf.id,
+                "name": ctf.name,
+                "platform": ctf.platform,
+                "ctfd_url": ctf.ctfd_url,
+            },
         },
         status_code=201,
     )
@@ -617,22 +919,34 @@ async def api_set_models(
     if not isinstance(enabled_specs, list):
         return JSONResponse({"ok": False, "error": "enabled must be a list"}, status_code=400)
 
-    # Delete existing prefs and insert new ones
+    # Update existing prefs in place; insert any specs missing for this user.
+    # (delete+insert in one transaction trips the uq_user_model_spec unique
+    # constraint because ORM flush order isn't guaranteed.)
     existing = (
         (await db.execute(select(UserModelPref).where(UserModelPref.user_id == user.id)))
         .scalars()
         .all()
     )
-    for row in existing:
-        await db.delete(row)
+    by_spec = {row.model_spec: row for row in existing}
 
+    enabled_set = set(enabled_specs)
     all_specs = {m["spec"] for m in ALL_MODELS}
+
     for spec in all_specs:
-        pref = UserModelPref(user_id=user.id, model_spec=spec, enabled=(spec in enabled_specs))
-        db.add(pref)
+        want = spec in enabled_set
+        row = by_spec.get(spec)
+        if row is None:
+            db.add(UserModelPref(user_id=user.id, model_spec=spec, enabled=want))
+        elif row.enabled != want:
+            row.enabled = want
+
+    # Drop any stale rows whose spec is no longer in the catalog.
+    for spec, row in by_spec.items():
+        if spec not in all_specs:
+            await db.delete(row)
 
     await db.commit()
-    return JSONResponse({"ok": True, "enabled": enabled_specs})
+    return JSONResponse({"ok": True, "enabled": sorted(enabled_set & all_specs)})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -783,6 +1097,7 @@ async def api_run_start(
     try:
         settings = Settings()
         if ctf_row:
+            settings.platform = (ctf_row.platform or "ctfd").lower()
             settings.ctfd_url = ctf_row.ctfd_url
             token = open_opt(ctf_row.ctfd_token_enc)
             if token:
@@ -798,6 +1113,9 @@ async def api_run_start(
             settings.anthropic_api_key = open_opt(st.anthropic_api_key_enc) or ""
             settings.openai_api_key = open_opt(st.openai_api_key_enc) or ""
             settings.gemini_api_key = open_opt(st.gemini_api_key_enc) or ""
+            settings.github_copilot_oauth_token = (
+                open_opt(getattr(st, "github_copilot_oauth_token_enc", b"")) or ""
+            )
             settings.claude_cli_path = st.claude_cli_path or ""
             settings.claude_config_dir = st.claude_config_dir or ""
             settings.codex_cli_path = st.codex_cli_path or ""
@@ -1411,9 +1729,227 @@ async def websocket_endpoint(ws: WebSocket):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+async def _bootstrap_admin_from_env() -> None:
+    """Create an admin user from ADMIN_BOOTSTRAP_EMAIL/PASSWORD if no admin exists.
+
+    Safe to run every startup. Does nothing if an admin already exists.
+    """
+    email = (os.environ.get("ADMIN_BOOTSTRAP_EMAIL") or "").strip().lower()
+    password = (os.environ.get("ADMIN_BOOTSTRAP_PASSWORD") or "").strip()
+    if not email or not password or len(password) < 8:
+        return
+    from backend.db import SessionLocal
+
+    try:
+        async with SessionLocal() as db:
+            existing_admin = (
+                await db.execute(select(User).where(User.role == "admin", User.is_active.is_(True)))
+            ).scalars().first()
+            if existing_admin:
+                return
+            match = (
+                await db.execute(select(User).where(User.email == email))
+            ).scalar_one_or_none()
+            if match:
+                match.role = "admin"
+                match.is_active = True
+                match.password_hash = hash_password(password)
+                await db.commit()
+                logger.info("Promoted existing user %s to admin via bootstrap env", email)
+                return
+            user = User(
+                email=email,
+                password_hash=hash_password(password),
+                role="admin",
+                is_active=True,
+                display_name=email.split("@")[0],
+            )
+            db.add(user)
+            await db.commit()
+            logger.info("Bootstrapped admin account %s from env", email)
+    except Exception as e:
+        logger.warning("Admin bootstrap failed: %s", e)
+
+
 @app.on_event("startup")
 async def on_startup():
     logger.info("CTF Agent UI starting at http://%s:%d", UI_HOST, UI_PORT)
+    await _bootstrap_admin_from_env()
+    # Subscribe to the challenge-event bus so that solver updates reflect into
+    # the /team kanban (Task.status, flag, solver status).
+    asyncio.create_task(_task_bus_subscriber(), name="team-bus-subscriber")
+
+
+_RELEVANT_EVENT_TYPES = {
+    "challenge_new",
+    "challenge_update",
+    "challenge_started",
+    "challenge_solved",
+    "challenge_failed",
+}
+
+
+async def _task_bus_subscriber() -> None:
+    """Listen to the event bus and reconcile Task rows on solver progress."""
+    bus = get_bus()
+    queue = await bus.subscribe()
+    try:
+        while True:
+            raw = await queue.get()
+            try:
+                msg = _json.loads(raw)
+            except Exception:
+                continue
+            etype = msg.get("type")
+            if etype not in _RELEVANT_EVENT_TYPES:
+                continue
+            data = msg.get("data") or {}
+            name = data.get("name")
+            if not name:
+                continue
+            await _reconcile_task_from_event(etype, name, data)
+    except asyncio.CancelledError:
+        pass
+    except Exception as e:
+        logger.debug("team bus subscriber stopped: %s", e)
+    finally:
+        await bus.unsubscribe(queue)
+
+
+_WRITEUP_INFLIGHT: set[int] = set()
+
+
+async def _auto_generate_writeup(task_id: int, name: str) -> None:
+    """Background: generate a writeup for a freshly-solved task.
+
+    Skips if the task already has one — solvers can re-emit `challenge_solved`
+    on retries, and we don't want to clobber a manual edit.
+    """
+    if task_id in _WRITEUP_INFLIGHT:
+        return
+    _WRITEUP_INFLIGHT.add(task_id)
+    try:
+        from backend.db import SessionLocal
+        from backend.db_models import Task
+        from ui.event_bus import get_bus
+        from ui.team_routes import _generate_writeup_md
+
+        bus = get_bus()
+        logs = list(bus.logs.get(name, []))
+        ch_state = bus.challenges.get(name, {})
+
+        async with SessionLocal() as db:
+            t = await db.get(Task, task_id)
+            if not t or (t.writeup_md or "").strip():
+                return
+            description = t.description_override_md or t.platform_description_md or ""
+            flag = t.flag or ch_state.get("flag", "")
+            category = t.category or ""
+            points = t.points or 0
+
+        # Run generation outside the DB session — it can take ~60s.
+        # Convert log entries (may be dicts) to text the generator expects.
+        log_lines: list[str] = []
+        for entry in logs[-600:]:
+            if isinstance(entry, str):
+                log_lines.append(entry)
+            else:
+                try:
+                    log_lines.append(_json.dumps(entry, default=str))
+                except Exception:
+                    log_lines.append(str(entry))
+
+        writeup = await _generate_writeup_md(
+            name=name,
+            category=category,
+            points=points,
+            description=description,
+            flag=flag,
+            logs=log_lines,
+        )
+
+        async with SessionLocal() as db:
+            t = await db.get(Task, task_id)
+            if not t or (t.writeup_md or "").strip():
+                return
+            t.writeup_md = writeup
+            t.updated_at = datetime.now(timezone.utc)
+            await db.commit()
+            logger.info("Auto-generated writeup for task %d (%s)", task_id, name)
+    except Exception as e:
+        logger.warning("Auto writeup for %s failed: %s", name, e)
+    finally:
+        _WRITEUP_INFLIGHT.discard(task_id)
+
+
+async def _reconcile_task_from_event(etype: str, name: str, data: dict) -> None:
+    """Update any Task rows matching *name* with fresh status/flag from the solver."""
+    from backend.db import SessionLocal
+    from backend.db_models import Task
+
+    status_raw = (data.get("status") or "").lower()
+    flag = data.get("flag") or ""
+
+    if etype == "challenge_solved":
+        new_status = "solved"
+    elif etype == "challenge_failed":
+        new_status = "blocked"
+    elif etype == "challenge_started":
+        new_status = "in_progress"
+    else:
+        mapping = {
+            "running": "in_progress",
+            "started": "in_progress",
+            "pending": "todo",
+            "solved": "solved",
+            "failed": "blocked",
+            "error": "blocked",
+            "stopped": "blocked",
+        }
+        new_status = mapping.get(status_raw, "")
+
+    try:
+        just_solved_ids: list[int] = []
+        async with SessionLocal() as db:
+            rows = (
+                (await db.execute(select(Task).where(Task.name == name))).scalars().all()
+            )
+            if not rows:
+                return
+            now = datetime.now(timezone.utc)
+            for t in rows:
+                # Only advance forward; don't stomp solved tasks back to in_progress.
+                became_solved = False
+                if new_status and t.status != new_status:
+                    if t.status == "solved" and new_status != "solved":
+                        pass
+                    else:
+                        was_solved = t.status == "solved"
+                        t.status = new_status
+                        if new_status == "solved" and t.solved_at is None:
+                            t.solved_at = now
+                            became_solved = not was_solved
+                if flag and not t.flag:
+                    t.flag = flag
+                if status_raw:
+                    t.last_solver_status = status_raw
+                elif etype:
+                    t.last_solver_status = etype
+                t.updated_at = now
+                if became_solved and not (t.writeup_md or "").strip():
+                    just_solved_ids.append(t.id)
+            await db.commit()
+
+        for tid in just_solved_ids:
+            asyncio.create_task(
+                _auto_generate_writeup(tid, name),
+                name=f"auto-writeup-{tid}",
+            )
+    except Exception as e:
+        logger.debug("reconcile Task for %s failed: %s", name, e)
+
+
+register_team_routes(app, templates)
 
 
 def run():

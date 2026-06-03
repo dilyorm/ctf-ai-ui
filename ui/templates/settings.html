@@ -10,6 +10,7 @@
 
   <!-- ── Nav ──────────────────────────────────────────────────────────── -->
   <nav class="topnav">
+    <button class="nav-toggle" id="nav-toggle" aria-label="Toggle menu" aria-expanded="false">☰</button>
     <div class="topnav-brand">
       <span class="brand-icon">⚡</span>
       <span class="brand-name">CTF Agent</span>
@@ -17,7 +18,9 @@
     <div class="topnav-links">
       <a href="/" class="nav-link">Dashboard</a>
       <a href="/ctfs" class="nav-link">CTFs</a>
+      <a href="/team" class="nav-link">Team</a>
       <a href="/settings" class="nav-link active">Settings</a>
+      {% if user.role == "admin" %}<a href="/admin" class="nav-link">Admin</a>{% endif %}
     </div>
     <div class="topnav-user">
       <span class="nav-email">{{ user.email or user.login }}</span>
@@ -165,6 +168,51 @@
           </div>
         </div>
 
+        <!-- GitHub Copilot -->
+        <div class="settings-card span-2">
+          <div class="settings-card-header">
+            <div class="provider-icon" style="background:#24292f;color:#fff;">⌥</div>
+            <div>
+              <h3>GitHub Copilot</h3>
+              <p class="hint">
+                Used for <code>copilot/*</code> models. Paste a GitHub OAuth token tied
+                to a Copilot-enabled account (Pro / Business / Student Pack).
+                Easiest source: run <code>gh auth login --scopes 'read:user'</code>,
+                then <code>gh auth token</code>.
+              </p>
+            </div>
+            {% if cfg.has_copilot %}<span class="key-status connected">Connected</span>{% else %}<span class="key-status">Not set</span>{% endif %}
+          </div>
+          <div class="settings-card-body">
+            {% if cfg.has_copilot %}
+            <div style="background:rgba(var(--accent-rgb,88,166,255),.08);border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 10px;font-size:12px;color:var(--text2);margin-bottom:10px;">
+              ⚠ Token saved, but Copilot won't run unless you also <strong>tick a <code>copilot/&lt;model&gt;</code> spec</strong>
+              in the <a href="#models" onclick="document.querySelector('[data-tab=models]').click();return false;" style="color:var(--accent)">Models</a> tab and click <em>Save Model Selection</em>.
+              Use <em>Test connection</em> below to see exactly which Copilot models your account exposes.
+            </div>
+            {% endif %}
+            <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px;">
+              <button class="btn btn-primary" id="btn-copilot-signin" onclick="startCopilotDeviceFlow()">Sign in to GitHub Copilot</button>
+              <span id="copilot-signin-hint" style="font-size:12px;color:var(--text3);">
+                {% if cfg.has_copilot %}Token saved. Click to re-authenticate.{% else %}Opens GitHub device-flow login (no token paste needed).{% endif %}
+              </span>
+            </div>
+            <details style="margin-top:4px;">
+              <summary style="font-size:12px;color:var(--text3);cursor:pointer;user-select:none;">Advanced: paste a token manually</summary>
+              <div class="form-group" style="margin-top:10px;">
+                <label>GitHub OAuth token</label>
+                <input type="password" id="cfg-copilot" placeholder="gho_•••••••• (must be from a Copilot OAuth client)" autocomplete="new-password" />
+                <span class="field-hint">Most PATs and <code>gh auth token</code> output won't work — GitHub returns 404 from <code>copilot_internal/v2/token</code> unless the token was minted via a Copilot OAuth client. Prefer the Sign-in button above.</span>
+              </div>
+            </details>
+            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+              <button class="btn btn-secondary btn-sm" id="btn-copilot-test" onclick="testCopilotConnection()">Test connection &amp; list models</button>
+              <span id="copilot-test-status" style="font-size:12px;color:var(--text3);"></span>
+            </div>
+            <pre id="copilot-models-out" style="margin-top:10px;max-height:240px;overflow:auto;display:none;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px;font-size:12px;"></pre>
+          </div>
+        </div>
+
         <!-- Claude Subscription -->
         <div class="settings-card span-2">
           <div class="settings-card-header">
@@ -214,7 +262,28 @@
 
     <!-- ── Tab: Models ───────────────────────────────────────────────── -->
     <div class="tab-panel" id="tab-models">
-      <p class="tab-desc">Select which models the solver swarm will use. Models from unconfigured providers are shown but won't run without their API keys.</p>
+      <p class="tab-desc">
+        Pick which models race against each challenge. Each ticked model = one solver instance per challenge.
+        Untick to reduce parallelism; tick more (or different providers) to add diversity.
+      </p>
+
+      <!-- Live tally (updated by JS as you toggle) -->
+      <div id="model-tally" class="settings-card span-2" style="margin-bottom:14px;">
+        <div class="settings-card-body" style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;">
+          <div>
+            <strong id="tally-count">0</strong> model{{ 's' }} selected →
+            <strong id="tally-solvers">0</strong> solver(s) will run per challenge.
+            <span id="tally-providers" style="margin-left:10px;color:var(--text3);font-size:12px;"></span>
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            <button class="btn btn-ghost btn-sm" type="button" data-preset="single-opus">Single Opus 4.7</button>
+            <button class="btn btn-ghost btn-sm" type="button" data-preset="copilot-codex">Copilot · GPT-5.3 Codex</button>
+            <button class="btn btn-ghost btn-sm" type="button" data-preset="balanced">Balanced (3 models)</button>
+            <button class="btn btn-ghost btn-sm" type="button" data-preset="all-copilot">All Copilot</button>
+            <button class="btn btn-ghost btn-sm" type="button" data-preset="clear">Clear</button>
+          </div>
+        </div>
+      </div>
 
       <div class="model-select-grid" id="model-select-grid">
         {% set ns = namespace(current_provider="") %}
@@ -223,7 +292,7 @@
             {% set ns.current_provider = model.provider_label %}
             <div class="model-provider-header">{{ model.provider_label }}</div>
           {% endif %}
-          <label class="model-select-card {% if model.spec in enabled_specs %}checked{% endif %}">
+          <label class="model-select-card {% if model.spec in enabled_specs %}checked{% endif %}" data-provider="{{ model.provider }}">
             <input type="checkbox" name="model_spec" value="{{ model.spec }}"
               {% if model.spec in enabled_specs %}checked{% endif %} />
             <div class="model-select-info">
@@ -310,44 +379,81 @@
   "use strict";
 
   // ── Tabs ──────────────────────────────────────────────────────────
+  function activateTab(name) {
+    const btn = document.querySelector(`.tab-btn[data-tab="${name}"]`);
+    if (!btn) return;
+    document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+    document.querySelectorAll(".tab-panel").forEach(p => p.classList.remove("active"));
+    btn.classList.add("active");
+    document.getElementById("tab-" + name).classList.add("active");
+  }
   document.querySelectorAll(".tab-btn").forEach(btn => {
     btn.addEventListener("click", () => {
-      document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
-      document.querySelectorAll(".tab-panel").forEach(p => p.classList.remove("active"));
-      btn.classList.add("active");
-      document.getElementById("tab-" + btn.dataset.tab).classList.add("active");
+      activateTab(btn.dataset.tab);
+      history.replaceState(null, "", "#" + btn.dataset.tab);
     });
   });
+  // Honor URL hash on load (/settings#models → open Models tab directly)
+  if (location.hash) activateTab(location.hash.replace(/^#/, ""));
 
-  // ── Model cards ────────────────────────────────────────────────────
+  // ── Model cards: click anywhere to toggle, keep card .checked class in sync ──
+  function setCard(card, on) {
+    const cb = card.querySelector("input[type=checkbox]");
+    cb.checked = on;
+    card.classList.toggle("checked", on);
+  }
   document.querySelectorAll(".model-select-card").forEach(card => {
-    card.addEventListener("click", () => {
+    card.addEventListener("click", e => {
+      // If they clicked the checkbox itself, let the change event drive state.
+      if (e.target.tagName === "INPUT") return;
+      e.preventDefault();
       const cb = card.querySelector("input[type=checkbox]");
-      cb.checked = !cb.checked;
-      card.classList.toggle("checked", cb.checked);
+      setCard(card, !cb.checked);
+      updateTally();
     });
-    // Prevent double-toggle when clicking checkbox directly
-    card.querySelector("input[type=checkbox]").addEventListener("click", e => {
-      e.stopPropagation();
+    card.querySelector("input[type=checkbox]").addEventListener("change", e => {
       card.classList.toggle("checked", e.target.checked);
+      updateTally();
     });
   });
 
-  // ── Defaults ───────────────────────────────────────────────────────
-  const DEFAULTS = [
-    "claude-sdk/claude-opus-4-6/medium",
-    "claude-sdk/claude-opus-4-6/max",
-    "codex/gpt-5.4",
-    "codex/gpt-5.4-mini",
-    "codex/gpt-5.3-codex",
-  ];
-  document.getElementById("btn-select-defaults").addEventListener("click", () => {
+  // ── Live tally ────────────────────────────────────────────────────
+  function updateTally() {
+    const checked = Array.from(document.querySelectorAll(".model-select-card input:checked"));
+    const count = checked.length;
+    const providers = new Set(checked.map(cb => cb.closest(".model-select-card").dataset.provider));
+    const tallyCount   = document.getElementById("tally-count");
+    const tallySolvers = document.getElementById("tally-solvers");
+    const tallyProv    = document.getElementById("tally-providers");
+    if (tallyCount)   tallyCount.textContent = count;
+    if (tallySolvers) tallySolvers.textContent = count;
+    if (tallyProv)    tallyProv.textContent = count ? "providers: " + Array.from(providers).join(", ") : "(empty selection falls back to the default opus-4-7/max)";
+  }
+  updateTally();
+
+  // ── Presets ───────────────────────────────────────────────────────
+  const PRESETS = {
+    "single-opus":  ["claude-sdk/claude-opus-4-7/max"],
+    "copilot-codex":["copilot/gpt-5.3-codex"],
+    "balanced":     ["claude-sdk/claude-opus-4-7/max", "copilot/gpt-5.3-codex", "codex/gpt-5.4"],
+    "all-copilot":  null, // tick every copilot/* card
+    "clear":        [],
+  };
+  function applyPreset(name) {
+    const target = PRESETS[name];
     document.querySelectorAll(".model-select-card").forEach(card => {
       const cb = card.querySelector("input[type=checkbox]");
-      cb.checked = DEFAULTS.includes(cb.value);
-      card.classList.toggle("checked", cb.checked);
+      let want;
+      if (target === null) want = card.dataset.provider === "copilot";
+      else                 want = target.includes(cb.value);
+      setCard(card, want);
     });
+    updateTally();
+  }
+  document.querySelectorAll("[data-preset]").forEach(btn => {
+    btn.addEventListener("click", () => applyPreset(btn.dataset.preset));
   });
+  document.getElementById("btn-select-defaults").addEventListener("click", () => applyPreset("single-opus"));
 
   // ── API call helper ────────────────────────────────────────────────
   async function postJSON(url, data) {
@@ -375,6 +481,7 @@
       ["cfg-anthropic",         "anthropic_api_key"],
       ["cfg-openai",            "openai_api_key"],
       ["cfg-gemini",            "gemini_api_key"],
+      ["cfg-copilot",           "github_copilot_oauth_token"],
       ["cfg-claude-cli-path",   "claude_cli_path"],
       ["cfg-claude-config-dir", "claude_config_dir"],
       ["cfg-codex-cli-path",    "codex_cli_path"],
@@ -410,7 +517,14 @@
     ).map(cb => cb.value);
     try {
       const d = await postJSON("/api/models", { enabled });
-      setStatus("models-status", d.ok ? `Saved ${enabled.length} models` : d.error || "Failed", d.ok);
+      if (!d.ok) {
+        setStatus("models-status", d.error || "Failed", false);
+        return;
+      }
+      const msg = enabled.length === 0
+        ? `Saved (empty) — falls back to the default ${'{"' + 'claude-sdk/claude-opus-4-7/max' + '"}'} on next run.`
+        : `Saved ${enabled.length} model(s) → ${enabled.length} solver(s) per challenge. Stop and restart any active run for this to take effect.`;
+      setStatus("models-status", msg, true);
     } catch {
       setStatus("models-status", "Network error", false);
     }
@@ -477,6 +591,114 @@
       ta.value = text; document.body.appendChild(ta); ta.select();
       document.execCommand("copy"); document.body.removeChild(ta);
     });
+  }
+
+  // ── GitHub Copilot device-flow sign-in ─────────────────────────────
+  async function startCopilotDeviceFlow() {
+    openAuthModal("Sign in to GitHub Copilot", `<div class="auth-loading"><span class="spinner"></span> Asking GitHub for a device code…</div>`);
+    let data;
+    try {
+      const res = await fetch("/api/auth/copilot/device/start", { method: "POST" });
+      data = await res.json();
+    } catch {
+      openAuthModal("Error", `<p style="color:var(--red)">Network error — is the server running?</p>`);
+      return;
+    }
+    if (!data.ok) {
+      openAuthModal("GitHub Copilot Sign-in Failed", `<p style="color:var(--red)">${data.error || "Unknown error"}</p>`);
+      return;
+    }
+
+    const verifyUrl = data.verification_uri;
+    const userCode = data.user_code;
+    const intervalMs = Math.max(2000, (data.interval || 5) * 1000);
+
+    openAuthModal("Sign in to GitHub Copilot", `
+      <div class="auth-step">
+        <p>1. Open <a href="${verifyUrl}" target="_blank" rel="noopener" style="color:var(--accent)">${verifyUrl}</a></p>
+        <p>2. Enter this one-time code:</p>
+        <div style="display:flex;align-items:center;gap:10px;margin:10px 0;">
+          <code style="font-size:22px;letter-spacing:4px;background:var(--bg3);padding:10px 14px;border-radius:6px;border:1px solid var(--border);">${userCode}</code>
+          <button class="btn btn-ghost btn-sm" onclick="_copyToClipboard('${userCode}')">Copy</button>
+        </div>
+        <p>3. Authorize the GitHub Copilot app, then come back here.</p>
+        <p id="copilot-poll-status" style="font-size:12px;color:var(--text3);margin-top:12px;">Waiting for authorization…</p>
+      </div>`);
+
+    if (_pollTimer) clearInterval(_pollTimer);
+    _pollTimer = setInterval(async () => {
+      let r;
+      try {
+        const res = await fetch("/api/auth/copilot/device/poll", { method: "POST" });
+        r = await res.json();
+      } catch {
+        return;
+      }
+      if (!r.ok) {
+        clearInterval(_pollTimer); _pollTimer = null;
+        document.getElementById("copilot-poll-status").innerHTML = `<span style="color:var(--red)">✗ ${r.error || "failed"}</span>`;
+        return;
+      }
+      if (r.status === "pending" || r.status === "slow_down") return;
+      clearInterval(_pollTimer); _pollTimer = null;
+      if (r.status === "connected") {
+        document.getElementById("copilot-poll-status").innerHTML = `<span style="color:var(--green)">✓ Connected. Reloading…</span>`;
+        setTimeout(() => location.reload(), 1200);
+      } else if (r.status === "expired") {
+        document.getElementById("copilot-poll-status").innerHTML = `<span style="color:var(--red)">Device code expired — click Sign in to GitHub Copilot again.</span>`;
+      } else if (r.status === "denied") {
+        document.getElementById("copilot-poll-status").innerHTML = `<span style="color:var(--red)">Access denied at GitHub.</span>`;
+      } else {
+        document.getElementById("copilot-poll-status").innerHTML = `<span style="color:var(--red)">Unexpected: ${r.status}</span>`;
+      }
+    }, intervalMs);
+  }
+
+  // ── GitHub Copilot test ────────────────────────────────────────────
+  async function testCopilotConnection() {
+    const btn = document.getElementById("btn-copilot-test");
+    const status = document.getElementById("copilot-test-status");
+    const out = document.getElementById("copilot-models-out");
+
+    // If the user typed a token but hasn't saved yet, save first so the
+    // server has it — otherwise the test reads the previously stored token.
+    const pasted = (document.getElementById("cfg-copilot").value || "").trim();
+    if (pasted) {
+      try {
+        await fetch("/api/config", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ github_copilot_oauth_token: pasted }),
+        });
+        document.getElementById("cfg-copilot").value = "";
+      } catch {}
+    }
+
+    btn.disabled = true;
+    status.textContent = "Exchanging GitHub token for a Copilot session…";
+    out.style.display = "none";
+    out.textContent = "";
+
+    try {
+      const res = await fetch("/api/settings/copilot/models");
+      const data = await res.json();
+      if (!data.ok) {
+        status.style.color = "var(--red)";
+        status.textContent = `✗ ${data.error || "failed"}`;
+        return;
+      }
+      const usable = (data.models || []).filter(m => m.supports_chat !== false && m.model_picker_enabled !== false);
+      status.style.color = "var(--green)";
+      status.textContent = `✓ ${usable.length} chat model(s) available — see below to pick one for the swarm.`;
+      const lines = usable.map(m => `  copilot/${m.id}${m.vendor ? `   (vendor: ${m.vendor})` : ""}`);
+      out.textContent = lines.length ? "Available copilot/* specs:\n\n" + lines.join("\n") : "No chat-capable models returned.";
+      out.style.display = "block";
+    } catch (e) {
+      status.style.color = "var(--red)";
+      status.textContent = `✗ ${e.message || e}`;
+    } finally {
+      btn.disabled = false;
+    }
   }
 
   // ── Claude sign-in flow ────────────────────────────────────────────
@@ -732,5 +954,6 @@
     }
   }
   </script>
+  <script src="/static/common.js"></script>
 </body>
 </html>

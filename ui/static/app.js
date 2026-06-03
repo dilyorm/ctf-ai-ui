@@ -20,6 +20,12 @@ const state = {
 // ── DOM refs ───────────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
 
+// Shared utilities live in common.js (escHtml, toast, confirmDialog, setBusy).
+const toast = window.toast;
+const confirmDialog = window.confirmDialog;
+const setBusy = window.setBusy;
+const escHtml = window.escHtml;
+
 const challengeList    = $("challenge-list");
 const challengeDetail  = $("challenge-detail");
 const welcomeScreen    = $("welcome-screen");
@@ -46,7 +52,6 @@ const msgInput         = $("msg-input");
 const msgStatus        = $("msg-status");
 const btnCopyFlag      = $("btn-copy-flag");
 const runStatusEl      = $("run-status");
-const runMsg           = $("run-msg");
 const btnRunStart      = $("btn-run-start");
 const btnRunStop       = $("btn-run-stop");
 const concurrencySlider = $("concurrency-slider");
@@ -398,35 +403,51 @@ function renderModelCosts() {
 }
 
 // ── Operator message ───────────────────────────────────────────────
-if (btnSendMsg) {
-  btnSendMsg.addEventListener("click", async () => {
-    const msg = msgInput.value.trim();
-    if (!msg) return;
-    setStatus("msg-status", "Sending…", null);
-    try {
-      const res = await fetch("/api/message", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: msg }),
-      });
-      const data = await res.json();
-      if (data.ok) {
-        setStatus("msg-status", "Sent!", true);
-        msgInput.value = "";
-      } else {
-        setStatus("msg-status", data.error || "Failed", false);
-      }
-    } catch {
-      setStatus("msg-status", "Network error", false);
+async function sendOperatorMessage() {
+  const msg = msgInput.value.trim();
+  if (!msg) { toast("Type a message first", "warn"); return; }
+  const release = setBusy(btnSendMsg, true, "Sending…");
+  try {
+    const res = await fetch("/api/message", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: msg }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      toast("Hint sent to coordinator.", "success");
+      msgInput.value = "";
+    } else {
+      toast(data.error || "Send failed", "error");
     }
-  });
+  } catch {
+    toast("Network error.", "error");
+  } finally {
+    release();
+  }
 }
+
+if (btnSendMsg) btnSendMsg.addEventListener("click", sendOperatorMessage);
+if (msgInput)   msgInput.addEventListener("keydown", e => {
+  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+    e.preventDefault();
+    sendOperatorMessage();
+  }
+});
 
 // ── Run controls ───────────────────────────────────────────────────
 if (concurrencySlider) {
   concurrencySlider.addEventListener("input", () => {
     concurrencyVal.textContent = concurrencySlider.value;
   });
+}
+
+function formatDuration(secs) {
+  secs = Math.max(0, Math.floor(secs));
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = secs % 60;
+  return h ? `${h}h ${m}m` : m ? `${m}m ${s}s` : `${s}s`;
 }
 
 async function refreshRunStatus() {
@@ -437,11 +458,31 @@ async function refreshRunStatus() {
     if (!data.ok) return;
     const st = data.status || {};
     state.runStatus = st;
-    runStatusEl.textContent = st.running ? "running" : "stopped";
+    runStatusEl.textContent = st.running ? "running" : "idle";
     runStatusEl.style.color = st.running ? "var(--green)" : "var(--text3)";
-    // Update challenge control buttons if a challenge is selected
+
+    if (btnRunStart) btnRunStart.disabled = !!st.running;
+    if (btnRunStop)  btnRunStop.disabled  = !st.running;
+
+    const meta = $("run-meta");
+    if (meta) {
+      if (st.running && st.started_at) {
+        const elapsed = (Date.now() - new Date(st.started_at).getTime()) / 1000;
+        meta.className = "run-meta";
+        meta.textContent = `Up for ${formatDuration(elapsed)}`;
+      } else if (st.last_error) {
+        meta.className = "run-meta error";
+        meta.textContent = `Last error: ${st.last_error.slice(0, 80)}`;
+      } else if (st.started_at) {
+        meta.className = "run-meta";
+        meta.textContent = "Stopped";
+      } else {
+        meta.className = "run-meta";
+        meta.textContent = "";
+      }
+    }
+
     if (state.selectedChallenge) updateChallengeControlButtons(state.selectedChallenge);
-    // Update sidebar badges
     renderChallengeList();
   } catch {
     if (runStatusEl) runStatusEl.textContent = "unknown";
@@ -449,58 +490,75 @@ async function refreshRunStatus() {
 }
 
 async function runStart() {
-  setStatus("run-msg", "Starting…", null);
   const ctfId = ctfSelector ? ctfSelector.value : "";
   const maxConcurrent = concurrencySlider ? parseInt(concurrencySlider.value) : 10;
   const noSubmit = noSubmitToggle ? noSubmitToggle.checked : false;
 
   if (!ctfId) {
-    setStatus("run-msg", "Select a CTF instance first (Manage CTFs)", false);
+    toast("Select a CTF instance first (open Manage CTFs).", "warn");
     return;
   }
 
+  const release = setBusy(btnRunStart, true, "Starting…");
   try {
     const res = await fetch("/api/run/start", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        ctf_id: ctfId ? parseInt(ctfId) : undefined,
+        ctf_id: parseInt(ctfId),
         coordinator: "claude",
         max_concurrent_challenges: maxConcurrent,
         no_submit: noSubmit,
       }),
     });
     const data = await res.json();
-    if (data.ok) {
-      setStatus("run-msg", "Started", true);
-    } else {
-      setStatus("run-msg", data.error || "Failed", false);
-    }
+    if (data.ok) toast("Solver started.", "success");
+    else         toast(data.error || "Failed to start", "error", { duration: 6000 });
   } catch {
-    setStatus("run-msg", "Network error", false);
+    toast("Network error while starting.", "error");
+  } finally {
+    release();
+    refreshRunStatus();
   }
-  refreshRunStatus();
 }
 
-async function runStop() {
-  setStatus("run-msg", "Stopping…", null);
+async function runStop({ skipConfirm = false } = {}) {
+  if (!skipConfirm) {
+    const chCount = Object.values(state.challenges).filter(c => c.status === "running").length;
+    const ok = await confirmDialog({
+      title: "Stop the running solver?",
+      body: chCount
+        ? `This will cancel the coordinator and kill <strong>${chCount}</strong> running challenge${chCount === 1 ? "" : "s"}. Solved flags are kept.`
+        : "This will cancel the coordinator. Solved flags are kept.",
+      confirmText: "Stop solver",
+      cancelText: "Keep running",
+      icon: "■",
+      danger: true,
+    });
+    if (!ok) return;
+  }
+
+  const release = setBusy(btnRunStop, true, "Stopping…");
   try {
     const res = await fetch("/api/run/stop", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      // Force-stop so a stale run from another session/user can be stopped.
       body: JSON.stringify({ force: true }),
     });
     const data = await res.json();
-    setStatus("run-msg", data.ok ? (data.stopped ? "Stopped" : "Not running") : data.error || "Failed", data.ok);
+    if (!data.ok)             toast(data.error || "Stop failed", "error");
+    else if (data.stopped)    toast("Solver stopped.", "success");
+    else                       toast("No active run to stop.", "info");
   } catch {
-    setStatus("run-msg", "Network error", false);
+    toast("Network error while stopping.", "error");
+  } finally {
+    release();
+    refreshRunStatus();
   }
-  refreshRunStatus();
 }
 
-if (btnRunStart) btnRunStart.addEventListener("click", runStart);
-if (btnRunStop)  btnRunStop.addEventListener("click", runStop);
+if (btnRunStart) btnRunStart.addEventListener("click", () => runStart());
+if (btnRunStop)  btnRunStop.addEventListener("click",  () => runStop());
 
 // ── Per-challenge controls ──────────────────────────────────────────
 async function challengeControl(endpoint) {
@@ -539,13 +597,26 @@ async function challengeControl(endpoint) {
 if (btnChStop)     btnChStop.addEventListener("click",     () => challengeControl("stop"));
 if (btnChPriority) btnChPriority.addEventListener("click", () => challengeControl("priority"));
 if (btnChExclude)  btnChExclude.addEventListener("click",  async (e) => {
-  if (e) e.preventDefault();
-  // Avoid moving focus to the operator message textarea when clicking controls.
-  if (e) e.stopPropagation();
+  if (e) { e.preventDefault(); e.stopPropagation(); }
   const name = state.selectedChallenge;
   if (!name) return;
-  if (!confirm(`Exclude "${name}" from this run? It won't be auto-spawned again.`)) return;
+  const excluded = new Set(state.runStatus.excluded_challenges || []);
+  if (excluded.has(name)) {
+    await challengeControl("exclude");
+    toast(`"${name}" un-excluded`, "info");
+    return;
+  }
+  const ok = await confirmDialog({
+    title: "Exclude this challenge?",
+    body: `Exclude <strong>${escHtml(name)}</strong> from this run? It won't be auto-spawned again until the run is restarted.`,
+    confirmText: "Exclude",
+    cancelText: "Cancel",
+    icon: "✕",
+    danger: true,
+  });
+  if (!ok) return;
   await challengeControl("exclude");
+  toast(`"${name}" excluded`, "info");
 });
 
 // ── Challenge filters ──────────────────────────────────────────────
@@ -567,40 +638,87 @@ if (logAutoScrollChk) {
 
 // ── Copy flag ──────────────────────────────────────────────────────
 if (btnCopyFlag) {
-  btnCopyFlag.addEventListener("click", () => {
-    navigator.clipboard.writeText(flagText.textContent).then(() => {
+  btnCopyFlag.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(flagText.textContent);
       btnCopyFlag.textContent = "Copied!";
+      toast("Flag copied", "success", { duration: 1500 });
       setTimeout(() => { btnCopyFlag.textContent = "Copy"; }, 2000);
-    });
+    } catch {
+      toast("Clipboard unavailable", "error");
+    }
   });
 }
 
-// ── Utility ───────────────────────────────────────────────────────
-function escHtml(str) {
-  if (!str) return "";
-  return String(str)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+// ── Mobile drawer toggles ──────────────────────────────────────────
+function setupDrawer(triggerSel, panelSel) {
+  const trigger = document.querySelector(triggerSel);
+  const panel = document.querySelector(panelSel);
+  if (!trigger || !panel) return;
+  trigger.addEventListener("click", e => {
+    e.stopPropagation();
+    const others = document.querySelectorAll(".sidebar.open, .right-panel.open");
+    others.forEach(o => { if (o !== panel) o.classList.remove("open"); });
+    panel.classList.toggle("open");
+    updateDrawerOverlay();
+  });
 }
 
-function setStatus(id, msg, ok) {
-  const el = $(id);
-  if (!el) return;
-  el.textContent = msg;
-  el.className = "msg-status" + (ok === true ? " ok" : ok === false ? " err" : "");
-  if (ok !== null) setTimeout(() => { el.textContent = ""; el.className = "msg-status"; }, 4000);
+function updateDrawerOverlay() {
+  let overlay = document.getElementById("drawer-overlay");
+  const anyOpen = document.querySelector(".sidebar.open, .right-panel.open");
+  if (!overlay) {
+    overlay = document.createElement("div");
+    overlay.id = "drawer-overlay";
+    overlay.className = "drawer-overlay";
+    overlay.addEventListener("click", () => {
+      document.querySelectorAll(".sidebar.open, .right-panel.open").forEach(p => p.classList.remove("open"));
+      overlay.classList.remove("open");
+    });
+    document.body.appendChild(overlay);
+  }
+  overlay.classList.toggle("open", !!anyOpen);
 }
+
+// (Top nav toggle + Esc closes drawers handled in common.js)
 
 // ── Init ───────────────────────────────────────────────────────────
+async function refreshRunModelSummary() {
+  const countEl = document.getElementById("run-model-count");
+  const listEl  = document.getElementById("run-model-list");
+  if (!countEl || !listEl) return;
+  try {
+    const res = await fetch("/api/models");
+    const data = await res.json();
+    const enabled = (data.enabled || []);
+    const isDefault = !!data.default;
+    countEl.textContent = enabled.length || "0";
+    if (!enabled.length) {
+      listEl.innerHTML = `<em style="color:var(--text3)">no models selected — falls back to <code>claude-sdk/claude-opus-4-7/max</code></em>`;
+      return;
+    }
+    listEl.innerHTML = enabled
+      .map(s => `<span style="display:block">${isDefault ? "⊘ " : "✓ "}${s}</span>`)
+      .join("");
+    if (isDefault) {
+      listEl.innerHTML += `<em style="color:var(--text3);display:block;margin-top:4px;">↑ default — pick explicit models in <a href="/settings#models" style="color:var(--accent)">Settings → Models</a></em>`;
+    }
+  } catch {
+    listEl.textContent = "(failed to load model selection)";
+  }
+}
+
 function init() {
   connectWS();
   updateWSStatus("connecting");
   refreshRunStatus();
+  refreshRunModelSummary();
   setInterval(refreshRunStatus, 5000);
+  setInterval(refreshRunModelSummary, 10000);
 
-  // Read ctf_id from URL query param and pre-select
+  setupDrawer("#sidebar-toggle", ".sidebar");
+  setupDrawer("#right-panel-toggle", ".right-panel");
+
   const params = new URLSearchParams(location.search);
   const ctfParam = params.get("ctf_id");
   if (ctfParam && ctfSelector) {

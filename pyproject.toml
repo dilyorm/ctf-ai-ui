@@ -34,6 +34,7 @@ dependencies = [
 ctf-solve = "backend.cli:main"
 ctf-msg = "backend.cli:msg"
 ctf-ui = "ui.server:run"
+ctf-admin = "backend.cli:admin"
 
 [build-system]
 requires = ["hatchling"]

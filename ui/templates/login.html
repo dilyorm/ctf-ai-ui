@@ -23,8 +23,8 @@
 
       <form method="post" action="/login" class="auth-form">
         <div class="form-group">
-          <label for="email">Email</label>
-          <input type="email" id="email" name="email" placeholder="you@example.com" required autofocus />
+          <label for="email">Email or username</label>
+          <input type="text" id="email" name="email" placeholder="username or you@example.com" required autofocus autocomplete="username" />
         </div>
         <div class="form-group">
           <label for="password">Password</label>
@@ -43,7 +43,7 @@
       </a>
       {% endif %}
 
-      <p class="auth-footer">No account? <a href="/register">Create one</a></p>
+      <p class="auth-footer">Accounts are provisioned by an administrator.</p>
     </div>
   </div>
 </body>

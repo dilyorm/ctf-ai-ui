@@ -10,6 +10,7 @@
 
   <!-- ── Top Navigation ──────────────────────────────────────────────── -->
   <nav class="topnav">
+    <button class="nav-toggle" id="nav-toggle" aria-label="Toggle menu" aria-expanded="false">☰</button>
     <div class="topnav-brand">
       <span class="brand-icon">⚡</span>
       <span class="brand-name">CTF Agent</span>
@@ -17,7 +18,9 @@
     <div class="topnav-links">
       <a href="/" class="nav-link active">Dashboard</a>
       <a href="/ctfs" class="nav-link">CTFs</a>
+      <a href="/team" class="nav-link">Team</a>
       <a href="/settings" class="nav-link">Settings</a>
+      {% if user.role == "admin" %}<a href="/admin" class="nav-link">Admin</a>{% endif %}
     </div>
     <div class="topnav-center">
       <div class="stat-chip" id="stat-challenges">
@@ -42,6 +45,12 @@
       <a href="/auth/logout" class="btn btn-sm btn-ghost">Logout</a>
     </div>
   </nav>
+
+  <!-- Mobile drawer toggles (only shown at ≤860px) -->
+  <div class="drawer-bar">
+    <button class="sidebar-toggle" id="sidebar-toggle" aria-label="Toggle challenges">☰ Challenges</button>
+    <button class="sidebar-toggle" id="right-panel-toggle" aria-label="Toggle controls">⚙ Controls</button>
+  </div>
 
   <!-- ── Main Dashboard Layout ─────────────────────────────────────── -->
   <div class="layout">
@@ -151,6 +160,15 @@
           <input type="range" id="concurrency-slider" min="1" max="20" value="10" class="slider" />
         </div>
 
+        <!-- Models for next run (read-only summary; edit in /settings#models) -->
+        <div class="form-group">
+          <label style="display:flex;align-items:center;justify-content:space-between;">
+            <span>Models per challenge: <strong id="run-model-count">…</strong></span>
+            <a href="/settings#models" style="font-size:11px;color:var(--accent);">Edit →</a>
+          </label>
+          <div id="run-model-list" style="font-size:11px;color:var(--text3);max-height:60px;overflow:auto;border:1px solid var(--border);border-radius:var(--radius-sm);padding:6px 8px;background:var(--bg3);font-family:var(--mono);line-height:1.5;">loading…</div>
+        </div>
+
         <!-- No-submit toggle -->
         <div class="toggle-row">
           <label class="toggle-label">
@@ -164,11 +182,11 @@
           <span class="run-label">Status</span>
           <span class="run-value" id="run-status">unknown</span>
         </div>
+        <div class="run-meta" id="run-meta"></div>
         <div class="run-actions">
           <button class="btn btn-primary" id="btn-run-start">▶ Start</button>
-          <button class="btn btn-danger" id="btn-run-stop">■ Stop All</button>
+          <button class="btn btn-danger" id="btn-run-stop" disabled>■ Stop</button>
         </div>
-        <div class="msg-status" id="run-msg"></div>
       </div>
 
       <!-- Cost Tracker -->
@@ -189,7 +207,7 @@
         <p class="hint">Send a hint to the running coordinator.</p>
         <textarea class="msg-input" id="msg-input" rows="3" placeholder="e.g. The flag format is CTF{...}"></textarea>
         <button class="btn btn-primary btn-full" id="btn-send-msg">Send to Coordinator</button>
-        <div class="msg-status" id="msg-status"></div>
+        <p class="hint" style="margin-top:4px">Tip: ⌘/Ctrl + Enter to send</p>
       </div>
 
       <!-- Connection Status -->
@@ -204,6 +222,7 @@
     </aside>
   </div>
 
+  <script src="/static/common.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

@@ -14,6 +14,8 @@ from backend.cost_tracker import CostTracker
 from backend.ctfd import CTFdClient
 from backend.deps import CoordinatorDeps
 from backend.models import DEFAULT_MODELS
+from backend.platforms import make_platform_client
+from backend.platforms.base import PlatformClient
 from backend.poller import CTFdPoller
 from backend.prompts import ChallengeMeta
 
@@ -31,9 +33,10 @@ def build_deps(
     challenge_dirs: dict[str, str] | None = None,
     challenge_metas: dict[str, ChallengeMeta] | None = None,
     exclude_challenges: set[str] | None = None,
-) -> tuple[CTFdClient, CostTracker, CoordinatorDeps]:
-    """Create CTFd client, cost tracker, and coordinator deps."""
-    ctfd = CTFdClient(
+) -> tuple[PlatformClient, CostTracker, CoordinatorDeps]:
+    """Create platform client (CTFd or rCTF), cost tracker, and coordinator deps."""
+    ctfd = make_platform_client(
+        platform=getattr(settings, "platform", "ctfd") or "ctfd",
         base_url=settings.ctfd_url,
         token=settings.ctfd_token,
         username=settings.ctfd_user,
@@ -70,7 +73,7 @@ def build_deps(
 
 async def run_event_loop(
     deps: CoordinatorDeps,
-    ctfd: CTFdClient,
+    ctfd: PlatformClient,
     cost_tracker: CostTracker,
     turn_fn: TurnFn,
     status_interval: int = 60,
@@ -91,6 +94,10 @@ async def run_event_loop(
     excluded = set(exclude_challenges or set())
     stopped: set[str] = set()
     priority: set[str] = set()
+
+    # STOP_ALL should immediately end the run (keep UI up) and prevent respawn.
+    shutdown = asyncio.Event()
+    paused = False
 
     # Drain operator messages promptly even if the coordinator LLM call blocks.
     operator_outbox: asyncio.Queue[str] = asyncio.Queue()
@@ -164,10 +171,29 @@ async def run_event_loop(
                 continue
 
             if text == "STOP_ALL" or text.startswith("STOP_ALL"):
-                # Kill/cancel everything we know about.
+                # Operational stop: prevent further auto-spawn, kill what we know
+                # about, best-effort cleanup of orphan containers, and exit loop.
+                nonlocal paused
+                paused = True
+                shutdown.set()
+
+                # Mark all currently unsolved challenges as stopped so they won't
+                # be re-spawned before the loop exits.
+                try:
+                    stopped.update(poller.known_challenges - poller.known_solved)
+                except Exception:
+                    pass
+
                 for name in list(deps.swarms.keys()):
                     stopped.add(name)
                     _kill(name)
+
+                try:
+                    from backend.sandbox import cleanup_orphan_containers
+
+                    await cleanup_orphan_containers()
+                except Exception:
+                    pass
                 continue
 
             # Deterministic runtime directives.
@@ -238,6 +264,9 @@ async def run_event_loop(
         last_status = asyncio.get_event_loop().time()
 
         while True:
+            if shutdown.is_set():
+                break
+
             events = []
             evt = await poller.get_event(timeout=5.0)
             if evt:
@@ -256,8 +285,11 @@ async def run_event_loop(
             for evt in events:
                 if evt.kind == "new_challenge":
                     parts.append(f"NEW CHALLENGE: '{evt.challenge_name}' appeared. Spawn a swarm.")
-                    # Auto-spawn for new challenges
-                    await _auto_spawn_one(deps, evt.challenge_name, excluded, excluded_rx, stopped)
+                    # Auto-spawn for new challenges (unless STOP_ALL paused the run)
+                    if not paused and not shutdown.is_set():
+                        await _auto_spawn_one(
+                            deps, evt.challenge_name, excluded, excluded_rx, stopped
+                        )
                     # Emit to UI
                     try:
                         from ui.event_bus import get_bus
@@ -322,9 +354,13 @@ async def run_event_loop(
                 except asyncio.QueueEmpty:
                     break
 
+            if shutdown.is_set():
+                break
+
             # Keep the swarm pool full: spawn for any unsolved challenges that
             # don't currently have active swarms (after applying runtime directives).
-            await _auto_spawn_unsolved(deps, poller, excluded, excluded_rx, stopped, priority)
+            if not paused:
+                await _auto_spawn_unsolved(deps, poller, excluded, excluded_rx, stopped, priority)
 
             # Periodic status update — only when there are active swarms or other events
             now = asyncio.get_event_loop().time()

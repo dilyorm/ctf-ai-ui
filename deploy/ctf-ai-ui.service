@@ -11,9 +11,10 @@ WorkingDirectory=/root/ctf-ai-ui
 EnvironmentFile=/root/ctf-ai-ui/.env
 # Bind to localhost; nginx (ctf.dilyor.dev) terminates TLS and proxies to it.
 Environment=UI_HOST=0.0.0.0
-Environment=UI_PORT=8080
+Environment=UI_PORT=8090
 # `uv run` resolves the project venv. Adjust the uv path if `which uv` differs.
-ExecStart=/usr/local/bin/uv run uvicorn ui.server:app --host 0.0.0.0 --port 8080
+# Port 8090: 8080 is used by another service (teamgraphic) on this host.
+ExecStart=/usr/local/bin/uv run uvicorn ui.server:app --host 0.0.0.0 --port 8090
 Restart=always
 RestartSec=3
 # Solver runs are long-lived; don't kill on a single failed request.

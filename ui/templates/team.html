@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Team · CTF Agent</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <link rel="stylesheet" href="/static/team.css" />
+  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+</head>
+<body class="page-body">
+
+  <nav class="topnav">
+    <button class="nav-toggle" id="nav-toggle" aria-label="Toggle menu" aria-expanded="false">☰</button>
+    <div class="topnav-brand">
+      <span class="brand-icon">⚡</span>
+      <span class="brand-name">CTF Agent</span>
+    </div>
+    <div class="topnav-links">
+      <a href="/" class="nav-link">Dashboard</a>
+      <a href="/ctfs" class="nav-link">CTFs</a>
+      <a href="/team" class="nav-link active">Team</a>
+      <a href="/settings" class="nav-link">Settings</a>
+      {% if user.role == "admin" %}<a href="/admin" class="nav-link">Admin</a>{% endif %}
+    </div>
+    <div class="topnav-user">
+      <span class="nav-email">{{ user.email or user.login }}</span>
+      <a href="/auth/logout" class="btn btn-sm btn-ghost">Logout</a>
+    </div>
+  </nav>
+
+  <div class="team-header">
+    <div class="team-header-left">
+      <label for="team-ctf-select" class="team-label">CTF</label>
+      <select id="team-ctf-select">
+        {% if not ctfs %}<option value="">— No CTFs connected —</option>{% endif %}
+        {% for c in ctfs %}
+        <option value="{{ c.id }}">{{ c.name }} ({{ c.platform }})</option>
+        {% endfor %}
+      </select>
+      <button id="btn-sync" class="btn btn-secondary btn-sm" disabled>↻ Sync</button>
+      <button id="btn-new-task" class="btn btn-primary btn-sm" disabled>+ New Task</button>
+      <a href="/ctfs" class="btn btn-ghost btn-sm">Manage CTFs</a>
+    </div>
+    <div class="team-header-right">
+      <input type="search" id="team-filter" placeholder="Filter by name, category…" />
+      <span id="team-stats" class="team-stats"></span>
+    </div>
+  </div>
+
+  <div id="team-board" class="team-board">
+    <div class="kanban-col" data-status="todo">
+      <div class="kanban-col-head">To Do <span class="col-count" data-status="todo">0</span></div>
+      <div class="kanban-col-body" data-status="todo"></div>
+    </div>
+    <div class="kanban-col" data-status="in_progress">
+      <div class="kanban-col-head">In Progress <span class="col-count" data-status="in_progress">0</span></div>
+      <div class="kanban-col-body" data-status="in_progress"></div>
+    </div>
+    <div class="kanban-col" data-status="blocked">
+      <div class="kanban-col-head">Blocked <span class="col-count" data-status="blocked">0</span></div>
+      <div class="kanban-col-body" data-status="blocked"></div>
+    </div>
+    <div class="kanban-col" data-status="needs_review">
+      <div class="kanban-col-head">Needs Review <span class="col-count" data-status="needs_review">0</span></div>
+      <div class="kanban-col-body" data-status="needs_review"></div>
+    </div>
+    <div class="kanban-col" data-status="solved">
+      <div class="kanban-col-head">Solved <span class="col-count" data-status="solved">0</span></div>
+      <div class="kanban-col-body" data-status="solved"></div>
+    </div>
+    <div class="kanban-col" data-status="skipped">
+      <div class="kanban-col-head">Skipped <span class="col-count" data-status="skipped">0</span></div>
+      <div class="kanban-col-body" data-status="skipped"></div>
+    </div>
+  </div>
+
+  <!-- Task detail drawer -->
+  <div id="task-drawer" class="task-drawer" aria-hidden="true">
+    <div class="task-drawer-head">
+      <div class="task-drawer-title">
+        <h2 id="task-name">—</h2>
+        <div class="task-meta">
+          <span id="task-category" class="task-pill"></span>
+          <span id="task-points" class="task-pill"></span>
+          <span id="task-solves" class="task-pill task-pill-solves"></span>
+          <span id="task-solver-status" class="task-pill task-pill-muted"></span>
+        </div>
+      </div>
+      <button class="task-drawer-close" id="task-drawer-close" aria-label="Close">✕</button>
+    </div>
+
+    <div class="task-drawer-controls">
+      <label>Status
+        <select id="task-status">
+          <option value="todo">To Do</option>
+          <option value="in_progress">In Progress</option>
+          <option value="blocked">Blocked</option>
+          <option value="needs_review">Needs Review</option>
+          <option value="solved">Solved</option>
+          <option value="skipped">Skipped</option>
+        </select>
+      </label>
+      <label>Assignee
+        <select id="task-assignee">
+          <option value="">Unassigned</option>
+          <option value="ai">🤖 AI (solver swarm)</option>
+        </select>
+      </label>
+      <label>Priority
+        <input type="number" id="task-priority" min="0" max="10" step="1" value="0" />
+      </label>
+    </div>
+
+    <div class="task-tabs" role="tablist">
+      <button class="task-tab active" data-tab="description">Description</button>
+      <button class="task-tab" data-tab="writeup">Writeup</button>
+      <button class="task-tab" data-tab="attachments">Files</button>
+      <button class="task-tab" data-tab="notes">Notes</button>
+    </div>
+
+    <div class="task-tab-body" id="tab-description">
+      <div class="field-stack">
+        <div>
+          <h4>Upstream description</h4>
+          <div id="task-platform-desc" class="md-readonly"></div>
+          <div id="task-files-upstream" class="task-upstream-files"></div>
+        </div>
+        <div>
+          <h4>Team override <span class="optional">(shown instead of upstream when present)</span></h4>
+          <textarea id="task-override" rows="6" placeholder="Write markdown notes that override the upstream description…"></textarea>
+        </div>
+      </div>
+      <div class="field-row">
+        <label style="flex:1">
+          Flag
+          <input type="text" id="task-flag" placeholder="flag{…}" />
+        </label>
+      </div>
+    </div>
+
+    <div class="task-tab-body" id="tab-writeup" style="display:none">
+      <div class="writeup-controls">
+        <button class="btn btn-sm btn-secondary" id="btn-generate-writeup">✨ Generate from solver log</button>
+        <label class="btn btn-sm btn-secondary" style="cursor:pointer">
+          ⬆ Upload .md
+          <input type="file" id="writeup-upload" accept=".md,text/markdown,text/plain" style="display:none" />
+        </label>
+      </div>
+      <textarea id="task-writeup" rows="22" placeholder="# Challenge name&#10;&#10;## Approach&#10;…"></textarea>
+      <div id="task-writeup-preview" class="md-readonly" style="display:none"></div>
+      <div class="writeup-toggle">
+        <button class="btn btn-ghost btn-sm" id="btn-writeup-preview-toggle">Preview</button>
+      </div>
+    </div>
+
+    <div class="task-tab-body" id="tab-attachments" style="display:none">
+      <ul id="task-attachments" class="attachments-list"></ul>
+      <div class="attachments-upload">
+        <label class="btn btn-sm btn-secondary" style="cursor:pointer">
+          ⬆ Upload file
+          <input type="file" id="attachments-upload" style="display:none" />
+        </label>
+        <span class="field-hint">Max 10 MB per file. Stored with this task.</span>
+      </div>
+    </div>
+
+    <div class="task-tab-body" id="tab-notes" style="display:none">
+      <textarea id="task-notes" rows="18" placeholder="Team scratchpad — strategy, blockers, leads…"></textarea>
+    </div>
+
+    <div class="task-drawer-foot">
+      <button class="btn btn-primary" id="btn-save-task">Save</button>
+      <button class="btn btn-ghost btn-danger" id="btn-delete-task" style="display:none">Delete</button>
+      <span id="task-save-status" class="task-save-status"></span>
+    </div>
+  </div>
+
+  <div id="task-drawer-backdrop" class="task-drawer-backdrop" aria-hidden="true"></div>
+
+  <!-- New-task modal -->
+  <div id="new-task-overlay" class="modal-overlay" style="display:none" aria-hidden="true">
+    <div class="modal" role="dialog" aria-labelledby="new-task-title">
+      <div class="modal-header">
+        <h3 id="new-task-title">New Task</h3>
+        <button class="modal-close" id="new-task-close" aria-label="Close">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="new-task-name">Name <span style="color:var(--accent2)">*</span></label>
+          <input type="text" id="new-task-name" placeholder="Challenge name" required />
+        </div>
+        <div class="form-row" style="display:flex; gap:10px">
+          <div class="form-group" style="flex:2">
+            <label for="new-task-category">Category</label>
+            <input type="text" id="new-task-category" placeholder="web, pwn, crypto…" list="new-task-category-options" />
+            <datalist id="new-task-category-options">
+              <option value="web"></option>
+              <option value="pwn"></option>
+              <option value="crypto"></option>
+              <option value="reverse"></option>
+              <option value="forensics"></option>
+              <option value="osint"></option>
+              <option value="misc"></option>
+              <option value="stego"></option>
+              <option value="mobile"></option>
+              <option value="hardware"></option>
+              <option value="blockchain"></option>
+            </datalist>
+          </div>
+          <div class="form-group" style="flex:1">
+            <label for="new-task-points">Points</label>
+            <input type="number" id="new-task-points" min="0" step="1" value="0" />
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="new-task-desc">Description (markdown)</label>
+          <textarea id="new-task-desc" rows="6" placeholder="# Challenge&#10;&#10;Paste the prompt, any URLs, connection info…"></textarea>
+        </div>
+        <div class="form-group">
+          <label for="new-task-conn">Connection info <span class="optional">(optional)</span></label>
+          <input type="text" id="new-task-conn" placeholder="nc example.com 1337  —  or https://…" />
+        </div>
+        <p class="field-hint" style="margin:0">You can add files after creating the task, from the Files tab in the drawer.</p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" id="new-task-cancel">Cancel</button>
+        <button class="btn btn-primary" id="new-task-create">Create</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/common.js"></script>
+  <script src="/static/team.js"></script>
+</body>
+</html>

@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Admin · CTF Agent</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body class="page-body">
+
+  <nav class="topnav">
+    <button class="nav-toggle" id="nav-toggle" aria-label="Toggle menu" aria-expanded="false">☰</button>
+    <div class="topnav-brand">
+      <span class="brand-icon">⚡</span>
+      <span class="brand-name">CTF Agent</span>
+    </div>
+    <div class="topnav-links">
+      <a href="/" class="nav-link">Dashboard</a>
+      <a href="/ctfs" class="nav-link">CTFs</a>
+      <a href="/team" class="nav-link">Team</a>
+      <a href="/settings" class="nav-link">Settings</a>
+      <a href="/admin" class="nav-link active">Admin</a>
+    </div>
+    <div class="topnav-user">
+      <span class="nav-email">{{ user.email or user.login }}</span>
+      <a href="/auth/logout" class="btn btn-sm btn-ghost">Logout</a>
+    </div>
+  </nav>
+
+  <div class="page-container">
+    <div class="page-header">
+      <div>
+        <h1 class="page-title">Admin · Users</h1>
+        <p class="page-desc">Create, deactivate, and promote accounts. Users cannot self-register.</p>
+      </div>
+      <button class="btn btn-primary" id="btn-new-user">+ New user</button>
+    </div>
+
+    <table class="admin-table" id="users-table">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Email</th>
+          <th>Display name</th>
+          <th>Role</th>
+          <th>Active</th>
+          <th>Created</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="users-body">
+        <tr><td colspan="7" style="text-align:center;color:var(--muted)">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="modal-overlay" id="user-modal" style="display:none">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 id="user-modal-title">New user</h3>
+        <button class="modal-close" id="user-modal-close">✕</button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="user-modal-id" />
+        <div class="form-group">
+          <label>Email <span class="required">*</span></label>
+          <input type="email" id="user-modal-email" autocomplete="email" />
+        </div>
+        <div class="form-group">
+          <label>Display name</label>
+          <input type="text" id="user-modal-name" placeholder="Optional" />
+        </div>
+        <div class="form-group">
+          <label id="user-modal-pw-label">Password <span class="required">*</span></label>
+          <input type="password" id="user-modal-password" autocomplete="new-password" placeholder="Min 8 chars" />
+          <span class="field-hint" id="user-modal-pw-hint"></span>
+        </div>
+        <div class="form-group">
+          <label>Role</label>
+          <select id="user-modal-role">
+            <option value="member">member</option>
+            <option value="admin">admin</option>
+          </select>
+        </div>
+        <div class="form-group" id="user-modal-active-wrap" style="display:none">
+          <label><input type="checkbox" id="user-modal-active" checked /> Active</label>
+        </div>
+        <div id="user-modal-error" class="form-error" style="display:none"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="user-modal-cancel">Cancel</button>
+        <button class="btn btn-primary" id="user-modal-save">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/common.js"></script>
+  <script>
+  "use strict";
+
+  const tbody = document.getElementById("users-body");
+  const modal = document.getElementById("user-modal");
+  const modalTitle = document.getElementById("user-modal-title");
+  const idEl = document.getElementById("user-modal-id");
+  const emailEl = document.getElementById("user-modal-email");
+  const nameEl = document.getElementById("user-modal-name");
+  const pwEl = document.getElementById("user-modal-password");
+  const pwLabel = document.getElementById("user-modal-pw-label");
+  const pwHint = document.getElementById("user-modal-pw-hint");
+  const roleEl = document.getElementById("user-modal-role");
+  const activeWrap = document.getElementById("user-modal-active-wrap");
+  const activeEl = document.getElementById("user-modal-active");
+  const errBox = document.getElementById("user-modal-error");
+
+  function esc(s) {
+    return String(s ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+  }
+
+  async function loadUsers() {
+    const res = await fetch("/api/admin/users");
+    const data = await res.json();
+    if (!data.ok) {
+      tbody.innerHTML = `<tr><td colspan="7" style="color:var(--red)">Failed to load users.</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = "";
+    for (const u of data.users) {
+      const tr = document.createElement("tr");
+      tr.dataset.id = u.id;
+      tr.innerHTML = `
+        <td>${u.id}</td>
+        <td>${esc(u.email)}</td>
+        <td>${esc(u.display_name || "")}</td>
+        <td><span class="badge badge-${u.role === "admin" ? "admin" : "member"}">${u.role}</span></td>
+        <td>${u.is_active ? "✓" : "—"}</td>
+        <td>${u.created_at ? new Date(u.created_at).toLocaleDateString() : ""}</td>
+        <td>
+          <button class="btn btn-sm btn-ghost" data-act="edit">Edit</button>
+          <button class="btn btn-sm btn-danger" data-act="delete">Delete</button>
+        </td>
+      `;
+      tbody.appendChild(tr);
+    }
+    tbody.querySelectorAll("button[data-act]").forEach(b => {
+      b.addEventListener("click", () => {
+        const tr = b.closest("tr");
+        const id = tr.dataset.id;
+        if (b.dataset.act === "edit") openEdit(tr);
+        else if (b.dataset.act === "delete") deleteUser(id, tr);
+      });
+    });
+  }
+
+  function openCreate() {
+    idEl.value = "";
+    emailEl.value = "";
+    nameEl.value = "";
+    pwEl.value = "";
+    roleEl.value = "member";
+    activeEl.checked = true;
+    activeWrap.style.display = "none";
+    pwLabel.innerHTML = 'Password <span class="required">*</span>';
+    pwHint.textContent = "";
+    modalTitle.textContent = "New user";
+    errBox.style.display = "none";
+    modal.style.display = "flex";
+    setTimeout(() => emailEl.focus(), 30);
+  }
+
+  function openEdit(tr) {
+    const cells = tr.children;
+    idEl.value = tr.dataset.id;
+    emailEl.value = cells[1].textContent;
+    nameEl.value = cells[2].textContent;
+    roleEl.value = cells[3].textContent.trim();
+    activeEl.checked = cells[4].textContent.includes("✓");
+    activeWrap.style.display = "";
+    pwEl.value = "";
+    pwLabel.innerHTML = 'New password <span class="optional">(leave blank to keep)</span>';
+    pwHint.textContent = "Min 8 chars if changing.";
+    modalTitle.textContent = `Edit user #${tr.dataset.id}`;
+    errBox.style.display = "none";
+    modal.style.display = "flex";
+    setTimeout(() => nameEl.focus(), 30);
+  }
+
+  function closeModal() { modal.style.display = "none"; }
+  document.getElementById("btn-new-user").addEventListener("click", openCreate);
+  document.getElementById("user-modal-close").addEventListener("click", closeModal);
+  document.getElementById("user-modal-cancel").addEventListener("click", closeModal);
+  modal.addEventListener("click", e => { if (e.target === modal) closeModal(); });
+
+  async function save() {
+    const id = idEl.value;
+    const body = {
+      email: emailEl.value.trim(),
+      display_name: nameEl.value.trim(),
+      role: roleEl.value,
+    };
+    if (pwEl.value) body.password = pwEl.value;
+    if (id) body.is_active = activeEl.checked;
+    const btn = document.getElementById("user-modal-save");
+    const release = window.setBusy(btn, true, "Saving…");
+    try {
+      const res = await fetch(id ? `/api/admin/users/${id}` : "/api/admin/users", {
+        method: id ? "PATCH" : "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        errBox.textContent = data.error || "Save failed.";
+        errBox.style.display = "block";
+        release();
+        return;
+      }
+      window.toast(id ? "User updated" : "User created", "success");
+      closeModal();
+      loadUsers();
+    } catch {
+      errBox.textContent = "Network error.";
+      errBox.style.display = "block";
+      release();
+    }
+  }
+  document.getElementById("user-modal-save").addEventListener("click", save);
+
+  async function deleteUser(id, tr) {
+    const email = tr.children[1].textContent;
+    const ok = await window.confirmDialog({
+      title: "Delete user?",
+      body: `Permanently delete <strong>${esc(email)}</strong>? Their CTFs, settings, and credentials will be removed.`,
+      confirmText: "Delete user",
+      cancelText: "Keep",
+      icon: "🗑",
+      danger: true,
+    });
+    if (!ok) return;
+    const res = await fetch(`/api/admin/users/${id}`, { method: "DELETE" });
+    const data = await res.json();
+    if (data.ok) { window.toast("Deleted", "success"); tr.remove(); }
+    else window.toast(data.error || "Delete failed", "error");
+  }
+
+  loadUsers();
+  </script>
+  <style>
+    .admin-table { width: 100%; border-collapse: collapse; margin-top: 1rem; font-size: .95em; }
+    .admin-table th, .admin-table td { padding: .6rem .75rem; border-bottom: 1px solid var(--border); text-align: left; }
+    .admin-table th { color: var(--muted); font-weight: 600; font-size: .85em; text-transform: uppercase; letter-spacing: .04em; }
+    .badge { padding: 2px 8px; border-radius: 10px; font-size: .8em; font-weight: 600; }
+    .badge-admin { background: rgba(var(--accent-rgb,95,145,255),.15); color: var(--accent, #5f91ff); }
+    .badge-member { background: rgba(255,255,255,.06); color: var(--muted); }
+  </style>
+</body>
+</html>

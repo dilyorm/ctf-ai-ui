@@ -1,7 +1,7 @@
 """Add pooled_accounts table (team-wide shared subscription pool)
 
-Revision ID: 0004_pooled_accounts
-Revises: 0003_codex_subscription
+Revision ID: 0009_pooled_accounts
+Revises: 0008_copilot_token
 Create Date: 2026-06-03
 """
 
@@ -11,8 +11,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision = "0004_pooled_accounts"
-down_revision = "0003_codex_subscription"
+revision = "0009_pooled_accounts"
+down_revision = "0008_copilot_token"
 branch_labels = None
 depends_on = None
 

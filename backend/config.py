@@ -6,7 +6,11 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    # CTFd
+    # CTF platform: "ctfd" (default) or "rctf"
+    platform: str = "ctfd"
+
+    # CTFd (the field name is retained for backwards compatibility — it holds
+    # the URL/token for whichever platform is selected)
     ctfd_url: str = "http://localhost:8000"
     ctfd_user: str = "admin"
     ctfd_pass: str = "admin"
@@ -35,6 +39,10 @@ class Settings(BaseSettings):
     azure_openai_endpoint: str = ""
     azure_openai_api_key: str = ""
     opencode_zen_api_key: str = ""
+
+    # GitHub Copilot — long-lived GitHub OAuth/PAT, exchanged at runtime for
+    # short-lived Copilot session tokens by ``backend.copilot_auth``.
+    github_copilot_oauth_token: str = ""
 
     # Infra
     sandbox_image: str = "ctf-sandbox"

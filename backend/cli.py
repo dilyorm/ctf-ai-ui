@@ -62,7 +62,7 @@ def _setup_logging(verbose: bool = False) -> None:
     help="Claude config dir (subscription mode). Overrides CLAUDE_CONFIG_DIR.",
 )
 @click.option(
-    "--coordinator-model", default=None, help="Model for coordinator (default: claude-opus-4-6)"
+    "--coordinator-model", default=None, help="Model for coordinator (default: claude-opus-4-7)"
 )
 @click.option(
     "--coordinator",
@@ -75,6 +75,11 @@ def _setup_logging(verbose: bool = False) -> None:
 @click.option("--ui/--no-ui", default=True, help="Launch the web UI dashboard (default: enabled)")
 @click.option("--ui-port", default=8080, type=int, help="Web UI port (default: 8080)")
 @click.option("--ui-host", default="0.0.0.0", help="Web UI host (default: 0.0.0.0)")
+@click.option(
+    "--auto-run/--no-auto-run",
+    default=True,
+    help="Start solving immediately (use --no-auto-run for UI-driven starts)",
+)
 @click.option("-v", "--verbose", is_flag=True, help="Verbose logging")
 def main(
     ctfd_url: str | None,
@@ -95,6 +100,7 @@ def main(
     ui: bool,
     ui_port: int,
     ui_host: str,
+    auto_run: bool,
     verbose: bool,
 ) -> None:
     """CTF Agent — multi-model solver swarm.
@@ -105,10 +111,16 @@ def main(
     _setup_logging(verbose)
 
     settings = Settings(sandbox_image=image)
-    if ctfd_url:
-        settings.ctfd_url = ctfd_url
-    if ctfd_token:
-        settings.ctfd_token = ctfd_token
+    # UI-only mode should not talk to any default CTFd instance.
+    # Clear these before any coordinator logic runs.
+    if not auto_run:
+        settings.ctfd_url = ""
+        settings.ctfd_token = ""
+    else:
+        if ctfd_url:
+            settings.ctfd_url = ctfd_url
+        if ctfd_token:
+            settings.ctfd_token = ctfd_token
     settings.max_concurrent_challenges = max_challenges
 
     # Subscription-backed Claude SDK uses the local Claude Code CLI session.
@@ -190,23 +202,29 @@ def main(
             )
         )
     else:
-        asyncio.run(
-            _run_coordinator(
-                settings,
-                model_specs,
-                challenges_dir,
-                exclude_list,
-                exclude_challenge_regex,
-                no_submit,
-                coordinator_model,
-                coordinator,
-                max_challenges,
-                msg_port,
-                ui,
-                ui_host,
-                ui_port,
+        if not auto_run:
+            if not ui:
+                raise click.ClickException("--no-auto-run requires --ui")
+            # UI-only mode: runs are started via the web UI (/api/run/start).
+            asyncio.run(_start_ui_server(ui_host, ui_port))
+        else:
+            asyncio.run(
+                _run_coordinator(
+                    settings,
+                    model_specs,
+                    challenges_dir,
+                    exclude_list,
+                    exclude_challenge_regex,
+                    no_submit,
+                    coordinator_model,
+                    coordinator,
+                    max_challenges,
+                    msg_port,
+                    ui,
+                    ui_host,
+                    ui_port,
+                )
             )
-        )
 
 
 async def _run_single(
@@ -377,6 +395,9 @@ async def _start_ui_server(host: str = "0.0.0.0", port: int = 8080) -> None:
     """Start the FastAPI UI server as an asyncio task."""
     import uvicorn
 
+    # UI-only server: don't ever spin up a coordinator from .env defaults.
+    # Runs must be started via /api/run/start with an explicit CTF selection.
+
     config = uvicorn.Config(
         "ui.server:app",
         host=host,
@@ -415,6 +436,90 @@ def msg(message: str, port: int, host: str) -> None:
         console.print(f"[red]Failed:[/red] {e}")
         console.print("Is the coordinator running?")
         sys.exit(1)
+
+
+@click.group()
+def admin() -> None:
+    """Admin operations (user management)."""
+
+
+@admin.command("create-admin")
+@click.option("--email", required=True, help="Admin email address")
+@click.option(
+    "--password",
+    required=True,
+    prompt=True,
+    hide_input=True,
+    confirmation_prompt=True,
+    help="Admin password (min 8 chars)",
+)
+@click.option("--display-name", default="", help="Optional display name")
+def admin_create(email: str, password: str, display_name: str) -> None:
+    """Create (or promote) an admin user.
+
+    Idempotent: if the email already exists, promotes them to admin and
+    resets the password to the provided value.
+    """
+    import asyncio
+
+    from sqlalchemy import select
+
+    from backend.auth import hash_password
+    from backend.db import SessionLocal
+    from backend.db_models import User
+
+    async def _run() -> None:
+        email_n = email.strip().lower()
+        if len(password) < 8:
+            raise click.ClickException("Password must be at least 8 characters.")
+        async with SessionLocal() as db:
+            existing = (
+                await db.execute(select(User).where(User.email == email_n))
+            ).scalar_one_or_none()
+            if existing:
+                existing.role = "admin"
+                existing.is_active = True
+                existing.password_hash = hash_password(password)
+                if display_name:
+                    existing.display_name = display_name
+                await db.commit()
+                console.print(f"[green]Promoted {email_n} to admin; password reset.[/green]")
+                return
+            user = User(
+                email=email_n,
+                password_hash=hash_password(password),
+                role="admin",
+                is_active=True,
+                display_name=display_name or email_n.split("@")[0],
+            )
+            db.add(user)
+            await db.commit()
+            console.print(f"[green]Created admin {email_n}.[/green]")
+
+    asyncio.run(_run())
+
+
+@admin.command("list-users")
+def admin_list_users() -> None:
+    """List all users and their roles."""
+    import asyncio
+
+    from sqlalchemy import select
+
+    from backend.db import SessionLocal
+    from backend.db_models import User
+
+    async def _run() -> None:
+        async with SessionLocal() as db:
+            rows = (await db.execute(select(User).order_by(User.id))).scalars().all()
+            if not rows:
+                console.print("[yellow]No users.[/yellow]")
+                return
+            for u in rows:
+                active = "✓" if u.is_active else "✗"
+                console.print(f"  #{u.id:<4} {u.email:<40} role={u.role:<6} active={active}")
+
+    asyncio.run(_run())
 
 
 if __name__ == "__main__":

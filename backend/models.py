@@ -17,18 +17,19 @@ from pydantic_ai.settings import ModelSettings
 if TYPE_CHECKING:
     from backend.config import Settings
 
-# Default model specs — claude-sdk and codex providers use the new solver backends
+# Default model specs — single Opus 4.7 solver per challenge by default.
+# Users can opt into multi-model swarms via the Settings → Models page
+# (which writes UserModelPref rows that override DEFAULT_MODELS).
 DEFAULT_MODELS: list[str] = [
-    "claude-sdk/claude-opus-4-6/medium",
-    "claude-sdk/claude-opus-4-6/max",
-    "codex/gpt-5.4",
-    "codex/gpt-5.4-mini",
-    "codex/gpt-5.3-codex",
+    "claude-sdk/claude-opus-4-7/max",
 ]
 
 # Full catalog of supported models for UI model-selection page.
 ALL_MODELS: list[dict] = [
     # ── Claude subscription (Claude Code CLI auth) ─────────────────────────────
+    {"spec": "claude-sdk/claude-opus-4-7/low",    "label": "Claude Opus 4.7 · Low effort",    "provider": "claude", "provider_label": "Claude Subscription"},
+    {"spec": "claude-sdk/claude-opus-4-7/medium",  "label": "Claude Opus 4.7 · Medium effort", "provider": "claude", "provider_label": "Claude Subscription"},
+    {"spec": "claude-sdk/claude-opus-4-7/max",     "label": "Claude Opus 4.7 · Max effort",    "provider": "claude", "provider_label": "Claude Subscription"},
     {"spec": "claude-sdk/claude-opus-4-6/low",    "label": "Claude Opus 4.6 · Low effort",    "provider": "claude", "provider_label": "Claude Subscription"},
     {"spec": "claude-sdk/claude-opus-4-6/medium",  "label": "Claude Opus 4.6 · Medium effort", "provider": "claude", "provider_label": "Claude Subscription"},
     {"spec": "claude-sdk/claude-opus-4-6/max",     "label": "Claude Opus 4.6 · Max effort",    "provider": "claude", "provider_label": "Claude Subscription"},
@@ -44,15 +45,31 @@ ALL_MODELS: list[dict] = [
     # ── Google ─────────────────────────────────────────────────────────────────
     {"spec": "google/gemini-3-flash-preview", "label": "Gemini 3 Flash Preview", "provider": "google", "provider_label": "Google AI"},
     # ── Bedrock ────────────────────────────────────────────────────────────────
+    {"spec": "bedrock/us.anthropic.claude-opus-4-7-v1", "label": "Claude Opus 4.7 (Bedrock)", "provider": "bedrock", "provider_label": "AWS Bedrock"},
     {"spec": "bedrock/us.anthropic.claude-opus-4-6-v1", "label": "Claude Opus 4.6 (Bedrock)", "provider": "bedrock", "provider_label": "AWS Bedrock"},
     # ── Azure OpenAI ───────────────────────────────────────────────────────────
+    {"spec": "azure/claude-opus-4-7", "label": "Claude Opus 4.7 (Azure)", "provider": "azure", "provider_label": "Azure OpenAI"},
     {"spec": "azure/claude-opus-4-6", "label": "Claude Opus 4.6 (Azure)", "provider": "azure", "provider_label": "Azure OpenAI"},
     # ── OpenCode Zen ───────────────────────────────────────────────────────────
+    {"spec": "zen/claude-opus-4-7", "label": "Claude Opus 4.7 (Zen/OpenCode)", "provider": "zen", "provider_label": "OpenCode Zen"},
     {"spec": "zen/claude-opus-4-6", "label": "Claude Opus 4.6 (Zen/OpenCode)", "provider": "zen", "provider_label": "OpenCode Zen"},
+    # ── GitHub Copilot ─────────────────────────────────────────────────────────
+    # The exact set offered to your account is shown by Settings → "Test
+    # Copilot connection". The catalog below covers the common ones; adjust
+    # the spec to match anything `/api/settings/copilot/models` returns.
+    {"spec": "copilot/gpt-5.3-codex",   "label": "GPT-5.3 Codex (Copilot)",  "provider": "copilot", "provider_label": "GitHub Copilot"},
+    {"spec": "copilot/gpt-5-codex",     "label": "GPT-5 Codex (Copilot)",    "provider": "copilot", "provider_label": "GitHub Copilot"},
+    {"spec": "copilot/gpt-5",           "label": "GPT-5 (Copilot)",          "provider": "copilot", "provider_label": "GitHub Copilot"},
+    {"spec": "copilot/gpt-5-mini",      "label": "GPT-5 Mini (Copilot)",     "provider": "copilot", "provider_label": "GitHub Copilot"},
+    {"spec": "copilot/claude-opus-4",   "label": "Claude Opus 4 (Copilot)",  "provider": "copilot", "provider_label": "GitHub Copilot"},
+    {"spec": "copilot/claude-sonnet-4", "label": "Claude Sonnet 4 (Copilot)","provider": "copilot", "provider_label": "GitHub Copilot"},
+    {"spec": "copilot/o4-mini",         "label": "o4-mini (Copilot)",        "provider": "copilot", "provider_label": "GitHub Copilot"},
 ]
 
 # Context window sizes (tokens)
 CONTEXT_WINDOWS: dict[str, int] = {
+    "us.anthropic.claude-opus-4-7-v1": 1_000_000,
+    "claude-opus-4-7": 1_000_000,
     "us.anthropic.claude-opus-4-6-v1": 1_000_000,
     "claude-opus-4-6": 1_000_000,
     "gpt-5.4": 1_000_000,
@@ -64,6 +81,8 @@ CONTEXT_WINDOWS: dict[str, int] = {
 
 # Models that support vision
 VISION_MODELS: set[str] = {
+    "us.anthropic.claude-opus-4-7-v1",
+    "claude-opus-4-7",
     "us.anthropic.claude-opus-4-6-v1",
     "claude-opus-4-6",
     "gpt-5.4",
@@ -109,6 +128,32 @@ def resolve_model(spec: str, settings: Settings) -> Model:
                     api_key=settings.opencode_zen_api_key,
                 ),
             )
+        case "copilot":
+            from backend.copilot_auth import (
+                COPILOT_API_BASE,
+                make_copilot_http_client,
+            )
+            from pydantic_ai.models.openai import OpenAIResponsesModel
+
+            oauth = getattr(settings, "github_copilot_oauth_token", "") or ""
+            if not oauth:
+                raise ValueError(
+                    "copilot/* requires a GitHub OAuth token. "
+                    "Save it in Settings → GitHub Copilot."
+                )
+            # Codex variants (gpt-5.3-codex, gpt-5-codex, ...) are NOT served
+            # via Copilot's /chat/completions — only via the Responses API
+            # at /responses. Chat models (gpt-5, claude-sonnet-4, ...) work
+            # the other way around. Pick the right transport per model.
+            is_codex = "codex" in model_id.lower()
+            provider = OpenAIProvider(
+                base_url=COPILOT_API_BASE,
+                api_key="copilot-session",
+                http_client=make_copilot_http_client(oauth),
+            )
+            if is_codex:
+                return OpenAIResponsesModel(model_id, provider=provider)
+            return OpenAIModel(model_id, provider=provider)
         case "google":
             return GoogleModel(
                 model_id,
@@ -134,10 +179,15 @@ def resolve_model_settings(spec: str) -> ModelSettings:
                 bedrock_cache_tool_definitions=True,
                 bedrock_cache_messages=True,
             )
-        case "azure" | "zen":
-            # Azure/Zen use OpenAI chat completions — server-side prompt caching
-            # is automatic, no explicit config needed. Set max_tokens to avoid
-            # reserving the full context window.
+        case "azure" | "zen" | "copilot":
+            # OpenAI-compatible providers — server-side prompt caching is
+            # automatic, no explicit config needed. Set max_tokens to avoid
+            # reserving the full context window. Copilot Codex models go
+            # through the Responses API, which has its own settings class.
+            from pydantic_ai.models.openai import OpenAIResponsesModelSettings
+
+            if provider == "copilot" and "codex" in spec.lower():
+                return OpenAIResponsesModelSettings(max_tokens=128_000)
             return OpenAIModelSettings(
                 max_tokens=128_000,
             )

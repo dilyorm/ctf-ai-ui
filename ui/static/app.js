@@ -14,11 +14,17 @@ const state = {
   wsConnected: false,
   logAutoScroll: true,
   filter: "all",
-  runStatus: { running: false, stopped_challenges: [], priority_challenges: [] },
+  runStatus: { running: false, stopped_challenges: [], priority_challenges: [], excluded_challenges: [] },
 };
 
 // ── DOM refs ───────────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
+
+// Shared utilities live in common.js (escHtml, toast, confirmDialog, setBusy).
+const toast = window.toast;
+const confirmDialog = window.confirmDialog;
+const setBusy = window.setBusy;
+const escHtml = window.escHtml;
 
 const challengeList    = $("challenge-list");
 const challengeDetail  = $("challenge-detail");
@@ -46,7 +52,6 @@ const msgInput         = $("msg-input");
 const msgStatus        = $("msg-status");
 const btnCopyFlag      = $("btn-copy-flag");
 const runStatusEl      = $("run-status");
-const runMsg           = $("run-msg");
 const btnRunStart      = $("btn-run-start");
 const btnRunStop       = $("btn-run-stop");
 const concurrencySlider = $("concurrency-slider");
@@ -214,8 +219,12 @@ function renderChallengeList() {
     const pa = priority.has(a.name) ? -1 : 0;
     const pb = priority.has(b.name) ? -1 : 0;
     if (pa !== pb) return pa - pb;
-    const order = { running: 0, solved: 1, pending: 2, failed: 3 };
-    return (order[a.status] ?? 99) - (order[b.status] ?? 99) || (a.name || "").localeCompare(b.name || "");
+    const order = { running: 0, solved: 1, pending: 2, stopped: 3, excluded: 4, failed: 5 };
+
+    const excluded = new Set(state.runStatus.excluded_challenges || []);
+    const sa = excluded.has(a.name) ? "excluded" : (stopped.has(a.name) ? "stopped" : (a.status || "pending"));
+    const sb = excluded.has(b.name) ? "excluded" : (stopped.has(b.name) ? "stopped" : (b.status || "pending"));
+    return (order[sa] ?? 99) - (order[sb] ?? 99) || (a.name || "").localeCompare(b.name || "");
   });
 
   if (filtered.length === 0) {
@@ -223,16 +232,21 @@ function renderChallengeList() {
     return;
   }
 
+  const excluded = new Set(state.runStatus.excluded_challenges || []);
+
   challengeList.innerHTML = filtered.map(ch => {
     const isStopped = stopped.has(ch.name);
     const isPriority = priority.has(ch.name);
+    const isExcluded = excluded.has(ch.name);
+    const effectiveStatus = isExcluded ? "excluded" : (isStopped ? "stopped" : (ch.status || "pending"));
     const badges = [
       isPriority ? '<span class="ch-badge priority">▲</span>' : "",
+      isExcluded ? '<span class="ch-badge excluded">✕</span>' : "",
       isStopped  ? '<span class="ch-badge stopped">⏹</span>'  : "",
     ].join("");
     return `
-      <div class="challenge-item${state.selectedChallenge === ch.name ? " active" : ""}${isStopped ? " ch-stopped" : ""}" data-name="${escHtml(ch.name)}">
-        <div class="ch-status-dot ${ch.status || "pending"}"></div>
+      <div class="challenge-item${state.selectedChallenge === ch.name ? " active" : ""}${isStopped ? " ch-stopped" : ""}${isExcluded ? " ch-excluded" : ""}" data-name="${escHtml(ch.name)}">
+        <div class="ch-status-dot ${effectiveStatus}"></div>
         <div class="ch-info">
           <div class="ch-name">${escHtml(ch.name)}${badges}</div>
           <div class="ch-meta">${escHtml(ch.category || "")}${ch.flag ? " · " + escHtml(ch.flag) : ""}</div>
@@ -268,8 +282,17 @@ function selectChallenge(name) {
 
 function renderChallengeDetail(ch) {
   detailName.textContent = ch.name;
-  detailStatus.textContent = ch.status || "pending";
-  detailStatus.className = "status-badge " + (ch.status || "pending");
+  // If run controls say it's stopped/excluded, surface that even if the last
+  // backend-emitted status was "running".
+  const name = ch.name;
+  const stoppedSet = new Set(state.runStatus.stopped_challenges || []);
+  const excludedSet = new Set(state.runStatus.excluded_challenges || []);
+  const effectiveStatus = excludedSet.has(name)
+    ? "excluded"
+    : (stoppedSet.has(name) ? "stopped" : (ch.status || "pending"));
+
+  detailStatus.textContent = effectiveStatus;
+  detailStatus.className = "status-badge " + effectiveStatus;
   detailCategory.textContent = ch.category || "";
   detailValue.textContent = ch.value ? ch.value + " pts" : "";
 
@@ -288,13 +311,20 @@ function updateChallengeControlButtons(name) {
   if (!btnChStop || !btnChPriority || !btnChExclude) return;
   const stopped  = new Set(state.runStatus.stopped_challenges || []);
   const priority = new Set(state.runStatus.priority_challenges || []);
+  const excluded = new Set(state.runStatus.excluded_challenges || []);
   const isStopped  = stopped.has(name);
   const isPriority = priority.has(name);
+  const isExcluded = excluded.has(name);
 
   btnChStop.innerHTML     = isStopped  ? '<span class="ctrl-icon">▶</span> Resume'   : '<span class="ctrl-icon">⏹</span> Stop';
   btnChStop.classList.toggle("active", isStopped);
   btnChPriority.innerHTML = isPriority ? '<span class="ctrl-icon">⬆</span> Deprioritize' : '<span class="ctrl-icon">⬆</span> Priority';
   btnChPriority.classList.toggle("active", isPriority);
+
+  btnChExclude.innerHTML = isExcluded
+    ? '<span class="ctrl-icon">↩</span> Unexclude'
+    : '<span class="ctrl-icon">✕</span> Exclude';
+  btnChExclude.classList.toggle("active", isExcluded);
 }
 
 function updateModelsGrid(ch) {
@@ -373,35 +403,51 @@ function renderModelCosts() {
 }
 
 // ── Operator message ───────────────────────────────────────────────
-if (btnSendMsg) {
-  btnSendMsg.addEventListener("click", async () => {
-    const msg = msgInput.value.trim();
-    if (!msg) return;
-    setStatus("msg-status", "Sending…", null);
-    try {
-      const res = await fetch("/api/message", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: msg }),
-      });
-      const data = await res.json();
-      if (data.ok) {
-        setStatus("msg-status", "Sent!", true);
-        msgInput.value = "";
-      } else {
-        setStatus("msg-status", data.error || "Failed", false);
-      }
-    } catch {
-      setStatus("msg-status", "Network error", false);
+async function sendOperatorMessage() {
+  const msg = msgInput.value.trim();
+  if (!msg) { toast("Type a message first", "warn"); return; }
+  const release = setBusy(btnSendMsg, true, "Sending…");
+  try {
+    const res = await fetch("/api/message", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: msg }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      toast("Hint sent to coordinator.", "success");
+      msgInput.value = "";
+    } else {
+      toast(data.error || "Send failed", "error");
     }
-  });
+  } catch {
+    toast("Network error.", "error");
+  } finally {
+    release();
+  }
 }
+
+if (btnSendMsg) btnSendMsg.addEventListener("click", sendOperatorMessage);
+if (msgInput)   msgInput.addEventListener("keydown", e => {
+  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+    e.preventDefault();
+    sendOperatorMessage();
+  }
+});
 
 // ── Run controls ───────────────────────────────────────────────────
 if (concurrencySlider) {
   concurrencySlider.addEventListener("input", () => {
     concurrencyVal.textContent = concurrencySlider.value;
   });
+}
+
+function formatDuration(secs) {
+  secs = Math.max(0, Math.floor(secs));
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = secs % 60;
+  return h ? `${h}h ${m}m` : m ? `${m}m ${s}s` : `${s}s`;
 }
 
 async function refreshRunStatus() {
@@ -412,11 +458,31 @@ async function refreshRunStatus() {
     if (!data.ok) return;
     const st = data.status || {};
     state.runStatus = st;
-    runStatusEl.textContent = st.running ? "running" : "stopped";
+    runStatusEl.textContent = st.running ? "running" : "idle";
     runStatusEl.style.color = st.running ? "var(--green)" : "var(--text3)";
-    // Update challenge control buttons if a challenge is selected
+
+    if (btnRunStart) btnRunStart.disabled = !!st.running;
+    if (btnRunStop)  btnRunStop.disabled  = !st.running;
+
+    const meta = $("run-meta");
+    if (meta) {
+      if (st.running && st.started_at) {
+        const elapsed = (Date.now() - new Date(st.started_at).getTime()) / 1000;
+        meta.className = "run-meta";
+        meta.textContent = `Up for ${formatDuration(elapsed)}`;
+      } else if (st.last_error) {
+        meta.className = "run-meta error";
+        meta.textContent = `Last error: ${st.last_error.slice(0, 80)}`;
+      } else if (st.started_at) {
+        meta.className = "run-meta";
+        meta.textContent = "Stopped";
+      } else {
+        meta.className = "run-meta";
+        meta.textContent = "";
+      }
+    }
+
     if (state.selectedChallenge) updateChallengeControlButtons(state.selectedChallenge);
-    // Update sidebar badges
     renderChallengeList();
   } catch {
     if (runStatusEl) runStatusEl.textContent = "unknown";
@@ -424,52 +490,75 @@ async function refreshRunStatus() {
 }
 
 async function runStart() {
-  setStatus("run-msg", "Starting…", null);
   const ctfId = ctfSelector ? ctfSelector.value : "";
   const maxConcurrent = concurrencySlider ? parseInt(concurrencySlider.value) : 10;
   const noSubmit = noSubmitToggle ? noSubmitToggle.checked : false;
 
+  if (!ctfId) {
+    toast("Select a CTF instance first (open Manage CTFs).", "warn");
+    return;
+  }
+
+  const release = setBusy(btnRunStart, true, "Starting…");
   try {
     const res = await fetch("/api/run/start", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        ctf_id: ctfId ? parseInt(ctfId) : undefined,
+        ctf_id: parseInt(ctfId),
         coordinator: "claude",
         max_concurrent_challenges: maxConcurrent,
         no_submit: noSubmit,
       }),
     });
     const data = await res.json();
-    if (data.ok) {
-      setStatus("run-msg", "Started", true);
-    } else {
-      setStatus("run-msg", data.error || "Failed", false);
-    }
+    if (data.ok) toast("Solver started.", "success");
+    else         toast(data.error || "Failed to start", "error", { duration: 6000 });
   } catch {
-    setStatus("run-msg", "Network error", false);
+    toast("Network error while starting.", "error");
+  } finally {
+    release();
+    refreshRunStatus();
   }
-  refreshRunStatus();
 }
 
-async function runStop() {
-  setStatus("run-msg", "Stopping…", null);
+async function runStop({ skipConfirm = false } = {}) {
+  if (!skipConfirm) {
+    const chCount = Object.values(state.challenges).filter(c => c.status === "running").length;
+    const ok = await confirmDialog({
+      title: "Stop the running solver?",
+      body: chCount
+        ? `This will cancel the coordinator and kill <strong>${chCount}</strong> running challenge${chCount === 1 ? "" : "s"}. Solved flags are kept.`
+        : "This will cancel the coordinator. Solved flags are kept.",
+      confirmText: "Stop solver",
+      cancelText: "Keep running",
+      icon: "■",
+      danger: true,
+    });
+    if (!ok) return;
+  }
+
+  const release = setBusy(btnRunStop, true, "Stopping…");
   try {
     const res = await fetch("/api/run/stop", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
+      body: JSON.stringify({ force: true }),
     });
     const data = await res.json();
-    setStatus("run-msg", data.ok ? (data.stopped ? "Stopped" : "Not running") : data.error || "Failed", data.ok);
+    if (!data.ok)             toast(data.error || "Stop failed", "error");
+    else if (data.stopped)    toast("Solver stopped.", "success");
+    else                       toast("No active run to stop.", "info");
   } catch {
-    setStatus("run-msg", "Network error", false);
+    toast("Network error while stopping.", "error");
+  } finally {
+    release();
+    refreshRunStatus();
   }
-  refreshRunStatus();
 }
 
-if (btnRunStart) btnRunStart.addEventListener("click", runStart);
-if (btnRunStop)  btnRunStop.addEventListener("click", runStop);
+if (btnRunStart) btnRunStart.addEventListener("click", () => runStart());
+if (btnRunStop)  btnRunStop.addEventListener("click",  () => runStop());
 
 // ── Per-challenge controls ──────────────────────────────────────────
 async function challengeControl(endpoint) {
@@ -482,12 +571,22 @@ async function challengeControl(endpoint) {
       // Update local state
       const stopped  = new Set(state.runStatus.stopped_challenges  || []);
       const priority = new Set(state.runStatus.priority_challenges || []);
+      const excluded = new Set(state.runStatus.excluded_challenges || []);
       if (endpoint === "stop") {
         data.stopped ? stopped.add(name) : stopped.delete(name);
         state.runStatus.stopped_challenges = [...stopped];
       } else if (endpoint === "priority") {
         data.priority ? priority.add(name) : priority.delete(name);
         state.runStatus.priority_challenges = [...priority];
+      } else if (endpoint === "exclude") {
+        if (data.excluded) {
+          excluded.add(name);
+          stopped.add(name);
+        } else {
+          excluded.delete(name);
+        }
+        state.runStatus.excluded_challenges = [...excluded];
+        state.runStatus.stopped_challenges = [...stopped];
       }
       updateChallengeControlButtons(name);
       renderChallengeList();
@@ -497,18 +596,27 @@ async function challengeControl(endpoint) {
 
 if (btnChStop)     btnChStop.addEventListener("click",     () => challengeControl("stop"));
 if (btnChPriority) btnChPriority.addEventListener("click", () => challengeControl("priority"));
-if (btnChExclude)  btnChExclude.addEventListener("click",  async () => {
+if (btnChExclude)  btnChExclude.addEventListener("click",  async (e) => {
+  if (e) { e.preventDefault(); e.stopPropagation(); }
   const name = state.selectedChallenge;
   if (!name) return;
-  if (!confirm(`Exclude "${name}" from this run? It won't be auto-spawned again.`)) return;
-  // Send as operator message — coordinator respects EXCLUDE_CHALLENGE directive
-  await fetch("/api/message", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message: `EXCLUDE_CHALLENGE: ${name}` }),
+  const excluded = new Set(state.runStatus.excluded_challenges || []);
+  if (excluded.has(name)) {
+    await challengeControl("exclude");
+    toast(`"${name}" un-excluded`, "info");
+    return;
+  }
+  const ok = await confirmDialog({
+    title: "Exclude this challenge?",
+    body: `Exclude <strong>${escHtml(name)}</strong> from this run? It won't be auto-spawned again until the run is restarted.`,
+    confirmText: "Exclude",
+    cancelText: "Cancel",
+    icon: "✕",
+    danger: true,
   });
-  // Mark visually as excluded/stopped
-  await challengeControl("stop");
+  if (!ok) return;
+  await challengeControl("exclude");
+  toast(`"${name}" excluded`, "info");
 });
 
 // ── Challenge filters ──────────────────────────────────────────────
@@ -530,40 +638,87 @@ if (logAutoScrollChk) {
 
 // ── Copy flag ──────────────────────────────────────────────────────
 if (btnCopyFlag) {
-  btnCopyFlag.addEventListener("click", () => {
-    navigator.clipboard.writeText(flagText.textContent).then(() => {
+  btnCopyFlag.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(flagText.textContent);
       btnCopyFlag.textContent = "Copied!";
+      toast("Flag copied", "success", { duration: 1500 });
       setTimeout(() => { btnCopyFlag.textContent = "Copy"; }, 2000);
-    });
+    } catch {
+      toast("Clipboard unavailable", "error");
+    }
   });
 }
 
-// ── Utility ───────────────────────────────────────────────────────
-function escHtml(str) {
-  if (!str) return "";
-  return String(str)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+// ── Mobile drawer toggles ──────────────────────────────────────────
+function setupDrawer(triggerSel, panelSel) {
+  const trigger = document.querySelector(triggerSel);
+  const panel = document.querySelector(panelSel);
+  if (!trigger || !panel) return;
+  trigger.addEventListener("click", e => {
+    e.stopPropagation();
+    const others = document.querySelectorAll(".sidebar.open, .right-panel.open");
+    others.forEach(o => { if (o !== panel) o.classList.remove("open"); });
+    panel.classList.toggle("open");
+    updateDrawerOverlay();
+  });
 }
 
-function setStatus(id, msg, ok) {
-  const el = $(id);
-  if (!el) return;
-  el.textContent = msg;
-  el.className = "msg-status" + (ok === true ? " ok" : ok === false ? " err" : "");
-  if (ok !== null) setTimeout(() => { el.textContent = ""; el.className = "msg-status"; }, 4000);
+function updateDrawerOverlay() {
+  let overlay = document.getElementById("drawer-overlay");
+  const anyOpen = document.querySelector(".sidebar.open, .right-panel.open");
+  if (!overlay) {
+    overlay = document.createElement("div");
+    overlay.id = "drawer-overlay";
+    overlay.className = "drawer-overlay";
+    overlay.addEventListener("click", () => {
+      document.querySelectorAll(".sidebar.open, .right-panel.open").forEach(p => p.classList.remove("open"));
+      overlay.classList.remove("open");
+    });
+    document.body.appendChild(overlay);
+  }
+  overlay.classList.toggle("open", !!anyOpen);
 }
+
+// (Top nav toggle + Esc closes drawers handled in common.js)
 
 // ── Init ───────────────────────────────────────────────────────────
+async function refreshRunModelSummary() {
+  const countEl = document.getElementById("run-model-count");
+  const listEl  = document.getElementById("run-model-list");
+  if (!countEl || !listEl) return;
+  try {
+    const res = await fetch("/api/models");
+    const data = await res.json();
+    const enabled = (data.enabled || []);
+    const isDefault = !!data.default;
+    countEl.textContent = enabled.length || "0";
+    if (!enabled.length) {
+      listEl.innerHTML = `<em style="color:var(--text3)">no models selected — falls back to <code>claude-sdk/claude-opus-4-7/max</code></em>`;
+      return;
+    }
+    listEl.innerHTML = enabled
+      .map(s => `<span style="display:block">${isDefault ? "⊘ " : "✓ "}${s}</span>`)
+      .join("");
+    if (isDefault) {
+      listEl.innerHTML += `<em style="color:var(--text3);display:block;margin-top:4px;">↑ default — pick explicit models in <a href="/settings#models" style="color:var(--accent)">Settings → Models</a></em>`;
+    }
+  } catch {
+    listEl.textContent = "(failed to load model selection)";
+  }
+}
+
 function init() {
   connectWS();
   updateWSStatus("connecting");
   refreshRunStatus();
+  refreshRunModelSummary();
   setInterval(refreshRunStatus, 5000);
+  setInterval(refreshRunModelSummary, 10000);
 
-  // Read ctf_id from URL query param and pre-select
+  setupDrawer("#sidebar-toggle", ".sidebar");
+  setupDrawer("#right-panel-toggle", ".right-panel");
+
   const params = new URLSearchParams(location.search);
   const ctfParam = params.get("ctf_id");
   if (ctfParam && ctfSelector) {

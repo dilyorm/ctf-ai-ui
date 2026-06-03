@@ -107,6 +107,54 @@ class Credential(Base):
     user: Mapped[User] = relationship(back_populates="credentials")
 
 
+class PooledAccount(Base):
+    """A team-wide subscription account in the shared failover pool.
+
+    Each account maps to an isolated CLI config directory on the server that
+    holds the OAuth credentials produced by `claude setup-token` / `codex auth
+    login`. Any active run draws from this pool regardless of who added the
+    account ("general connections"); when one account hits its quota/limit the
+    swarm rotates to the next available account of the same provider.
+    """
+
+    __tablename__ = "pooled_accounts"
+    __table_args__ = (UniqueConstraint("config_dir", name="uq_pooled_accounts_config_dir"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+
+    # Subscription provider: "claude" | "codex"
+    provider: Mapped[str] = mapped_column(String(32), index=True)
+
+    # Human-friendly name shown on the dashboard (e.g. "alice-claude-max")
+    label: Mapped[str] = mapped_column(String(120), default="")
+
+    # Who connected it (nullable — survives user deletion so the pool keeps the account)
+    owner_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+
+    # Isolated CLI config home holding this account's OAuth credentials.
+    config_dir: Mapped[str] = mapped_column(String(500))
+
+    # Max solvers that may use this account concurrently (subscriptions rate-limit
+    # hard on parallel sessions — default 1).
+    max_concurrent: Mapped[int] = mapped_column(Integer, default=1)
+
+    # Owner can pause an account without deleting it.
+    disabled: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # Set when the account hit a quota/limit; it's skipped until this passes.
+    cooldown_until: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    last_used_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc)
+    )
+
+
 class UserModelPref(Base):
     __tablename__ = "user_model_prefs"
     __table_args__ = (UniqueConstraint("user_id", "model_spec", name="uq_user_model_spec"),)

@@ -82,8 +82,16 @@ class GlobalRunManager:
             if self._task and not self._task.done():
                 return {"ok": False, "error": "run already active"}
 
+            # Load the shared account pool so solvers can lease/rotate accounts.
+            try:
+                from backend.account_pool import get_account_pool
+
+                await get_account_pool().reload()
+            except Exception as e:
+                logger.warning("Account pool reload failed at run start: %s", e)
+
             self._started_by_user_id = user_id
-            self._started_at = dt.datetime.now(dt.timezone.utc)
+            self._started_at = dt.datetime.now(dt.UTC)
             self._last_result = None
             self._last_error = None
             self.stopped_challenges = set()

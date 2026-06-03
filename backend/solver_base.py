@@ -11,6 +11,9 @@ GAVE_UP = "gave_up"
 CANCELLED = "cancelled"
 ERROR = "error"
 QUOTA_ERROR = "quota_error"
+# No pool account was available to run this solver — the challenge should be
+# retried later once an account frees up / its cooldown elapses.
+PARKED = "parked"
 
 # Flag confirmation markers from CTFd
 CORRECT_MARKERS = ("CORRECT", "ALREADY SOLVED")

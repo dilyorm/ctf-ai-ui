@@ -108,6 +108,16 @@ async def do_spawn_swarm(deps: CoordinatorDeps, challenge_name: str) -> str:
                 "flag": result.flag,
                 "submit": "DRY RUN" if deps.no_submit else "confirmed by solver",
             }
+            deps.parked_until.pop(challenge_name, None)
+        elif getattr(swarm, "parked_until", None) is not None:
+            # No account was available — back off until one frees up so the
+            # coordinator doesn't immediately re-spawn into the same wall.
+            deps.parked_until[challenge_name] = swarm.parked_until.timestamp()
+            logger.info(
+                "Challenge '%s' parked until %s (no pool account available)",
+                challenge_name,
+                swarm.parked_until.isoformat(),
+            )
 
     task = asyncio.create_task(_run_and_cleanup(), name=f"swarm-{challenge_name}")
     deps.swarm_tasks[challenge_name] = task

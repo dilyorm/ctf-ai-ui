@@ -291,6 +291,15 @@ async def _auto_spawn_one(
         return
     if challenge_name in deps.swarms:
         return
+    # Respect parking backoff: don't re-spawn a challenge whose last attempt
+    # parked for lack of an available pool account until its retry time passes.
+    parked_until = deps.parked_until.get(challenge_name)
+    if parked_until is not None:
+        import time as _time
+
+        if parked_until > _time.time():
+            return
+        deps.parked_until.pop(challenge_name, None)
     active = sum(1 for t in deps.swarm_tasks.values() if not t.done())
     if active >= deps.max_concurrent_challenges:
         return

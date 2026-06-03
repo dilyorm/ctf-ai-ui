@@ -53,9 +53,12 @@ class ClaudeSolver:
         submit_fn=None,
         message_bus=None,
         notify_coordinator=None,
+        config_dir: str | None = None,
     ) -> None:
         self.model_spec = model_spec
         self.model_id = model_id_from_spec(model_spec)
+        # Leased pool account config dir (overrides settings.claude_config_dir).
+        self.config_dir = config_dir
         self.challenge_dir = challenge_dir
         self.meta = meta
         self.ctfd = ctfd
@@ -275,6 +278,9 @@ class ClaudeSolver:
 
         effort = effort_from_spec(self.model_spec)
 
+        # Prefer the leased pool account's config dir; fall back to settings.
+        config_dir = self.config_dir or getattr(self.settings, "claude_config_dir", "")
+
         options = ClaudeAgentOptions(
             model=self.model_id,
             system_prompt=system_prompt,
@@ -282,11 +288,7 @@ class ClaudeSolver:
             # Clear CLAUDECODE to prevent nested-session rejection when run from coordinator
             env={
                 "CLAUDECODE": "",
-                **(
-                    {"CLAUDE_CONFIG_DIR": getattr(self.settings, "claude_config_dir", "")}
-                    if getattr(self.settings, "claude_config_dir", "")
-                    else {}
-                ),
+                **({"CLAUDE_CONFIG_DIR": config_dir} if config_dir else {}),
             },
             cli_path=(getattr(self.settings, "claude_cli_path", "") or None),
             allowed_tools=["Bash", "WebFetch", "WebSearch"],
@@ -311,7 +313,7 @@ class ClaudeSolver:
                 "[%s] Failed to start Claude SDK client (cli_path=%r, config_dir=%r): %s",
                 self.agent_name,
                 getattr(self.settings, "claude_cli_path", "") or None,
-                getattr(self.settings, "claude_config_dir", "") or None,
+                config_dir or None,
                 e,
                 exc_info=True,
             )
@@ -320,7 +322,7 @@ class ClaudeSolver:
         self.tracer.event(
             "claude_sdk_config",
             cli_path=getattr(self.settings, "claude_cli_path", "") or None,
-            config_dir=getattr(self.settings, "claude_config_dir", "") or None,
+            config_dir=config_dir or None,
         )
         logger.info(f"[{self.agent_name}] Claude SDK solver started")
 
@@ -358,7 +360,7 @@ class ClaudeSolver:
                     break
                 try:
                     message = await asyncio.wait_for(it.__anext__(), timeout=120.0)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     logger.warning(
                         "[%s] Claude SDK receive_response timed out (messages=%d, session=%s)",
                         self.agent_name,
@@ -449,7 +451,7 @@ class ClaudeSolver:
                 "msg_count": msg_count,
                 "session": self._session_id,
                 "cli_path": getattr(self.settings, "claude_cli_path", "") or None,
-                "config_dir": getattr(self.settings, "claude_config_dir", "") or None,
+                "config_dir": self.config_dir or getattr(self.settings, "claude_config_dir", "") or None,
             }
             for attr in ("returncode", "cmd", "stdout", "stderr"):
                 if hasattr(e, attr):

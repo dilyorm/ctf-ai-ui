@@ -167,9 +167,12 @@ class CodexSolver:
         submit_fn=None,
         message_bus=None,
         notify_coordinator=None,
+        config_dir: str | None = None,
     ) -> None:
         self.model_spec = model_spec
         self.model_id = model_id_from_spec(model_spec)
+        # Leased pool account config dir (used as HOME; overrides settings.codex_config_dir).
+        self.config_dir = config_dir
         self.challenge_dir = challenge_dir
         self.meta = meta
         self.message_bus = message_bus
@@ -221,7 +224,8 @@ class CodexSolver:
         )
 
         codex_bin = getattr(self.settings, "codex_cli_path", "") or "codex"
-        codex_config_dir = getattr(self.settings, "codex_config_dir", "") or ""
+        # Prefer the leased pool account's config dir; fall back to settings.
+        codex_config_dir = self.config_dir or getattr(self.settings, "codex_config_dir", "") or ""
         codex_env: dict[str, str] | None = None
         if codex_config_dir:
             # Subscription mode: isolate per-user credentials by overriding HOME

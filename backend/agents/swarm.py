@@ -8,6 +8,12 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from backend.account_pool import (
+    Lease,
+    get_account_pool,
+    parse_cooldown_seconds,
+    pool_provider_for_spec,
+)
 from backend.agents.solver import Solver
 from backend.cost_tracker import CostTracker
 from backend.ctfd import CTFdClient
@@ -19,6 +25,7 @@ from backend.solver_base import (
     ERROR,
     FLAG_FOUND,
     GAVE_UP,
+    PARKED,
     QUOTA_ERROR,
     SolverProtocol,
     SolverResult,
@@ -67,7 +74,14 @@ class ChallengeSwarm:
     _last_submit_time: dict[str, float] = field(default_factory=dict)  # per-model last submit timestamp
     message_bus: ChallengeMessageBus = field(default_factory=ChallengeMessageBus)
 
-    def _create_solver(self, model_spec: str):
+    # Parking state: set when pooled solvers couldn't get an account. Holds the
+    # earliest datetime an account frees up, so the coordinator can back off
+    # before re-spawning this challenge instead of busy-looping.
+    parked_until: object | None = None
+    _parked_specs: set = field(default_factory=set)
+    _ran_specs: set = field(default_factory=set)
+
+    def _create_solver(self, model_spec: str, config_dir: str | None = None):
         """Create the right solver type based on provider.
 
         - claude-sdk/* → ClaudeSolver (Claude Agent SDK, subscription-first)
@@ -93,6 +107,7 @@ class ChallengeSwarm:
                 submit_fn=_submit_fn,
                 message_bus=self.message_bus,
                 notify_coordinator=_notify,
+                config_dir=config_dir,
             )
 
         if provider == "codex":
@@ -109,6 +124,7 @@ class ChallengeSwarm:
                 submit_fn=_submit_fn,
                 message_bus=self.message_bus,
                 notify_coordinator=_notify,
+                config_dir=config_dir,
             )
 
         return self._create_pydantic_solver(model_spec)
@@ -192,21 +208,54 @@ class ChallengeSwarm:
             return display, is_confirmed
 
     async def _run_solver(self, model_spec: str) -> SolverResult | None:
-        solver = self._create_solver(model_spec)
+        pool_provider = pool_provider_for_spec(provider_from_spec(model_spec))
+        pool = get_account_pool()
+        use_pool = bool(pool_provider) and pool.has_accounts(pool_provider)
+
+        lease: Lease | None = None
+        if use_pool:
+            lease = await pool.lease(pool_provider)
+            if lease is None:
+                # No account free right now — park this solver. The coordinator
+                # backs off and retries the challenge once an account frees up.
+                self._parked_specs.add(model_spec)
+                logger.info(
+                    f"[{self.meta.name}/{model_spec}] Parked — no '{pool_provider}' account available"
+                )
+                return SolverResult(
+                    flag=None, status=PARKED, findings_summary="parked: no account available",
+                    step_count=0, cost_usd=0.0, log_path="",
+                )
+
+        solver = self._create_solver(model_spec, config_dir=lease.config_dir if lease else None)
         self.solvers[model_spec] = solver
+        self._ran_specs.add(model_spec)
 
         try:
-            result, final_solver = await self._run_solver_loop(solver, model_spec)
+            result, final_solver, lease = await self._run_solver_loop(
+                solver, model_spec, lease, pool_provider
+            )
             solver = final_solver
+            if result.status == PARKED:
+                self._parked_specs.add(model_spec)
             return result
         except Exception as e:
             logger.error(f"[{self.meta.name}/{model_spec}] Fatal: {e}", exc_info=True)
             return None
         finally:
+            if lease is not None:
+                await get_account_pool().release(lease)
             await solver.stop()
 
-    async def _run_solver_loop(self, solver, model_spec: str) -> tuple[SolverResult, SolverProtocol]:
-        """Inner loop: start → run → bump → run → ..."""
+    async def _run_solver_loop(
+        self, solver, model_spec: str, lease: Lease | None = None, pool_provider: str | None = None
+    ) -> tuple[SolverResult, SolverProtocol, Lease | None]:
+        """Inner loop: start → run → bump → run → ...
+
+        Returns the final result, the (possibly re-created) solver, and the
+        currently-held pool lease so the caller can release it.
+        """
+        pool = get_account_pool()
         bump_count = 0
         consecutive_errors = 0
         result = SolverResult(
@@ -232,13 +281,43 @@ class ChallengeSwarm:
                 logger.info(
                     f"[{self.meta.name}] Flag found by {model_spec}: {result.flag}"
                 )
-                return result, solver
+                return result, solver, lease
 
             if result.status == CANCELLED:
                 break
 
-            # Quota exhaustion: fall back to API-backed Pydantic AI solver
+            # Quota exhaustion.
             if result.status == QUOTA_ERROR:
+                # Pooled provider: put this account on cooldown and rotate to the
+                # next available subscription account (subscriptions-only failover).
+                if lease is not None and pool_provider:
+                    cooldown = parse_cooldown_seconds(result.findings_summary)
+                    await pool.mark_cooldown(lease, cooldown)
+                    await solver.stop()  # fresh sandbox for the next account
+                    next_lease = await pool.lease(pool_provider)
+                    if next_lease is None:
+                        # Every account of this provider is busy/cooling — park.
+                        logger.warning(
+                            f"[{self.meta.name}/{model_spec}] All '{pool_provider}' accounts "
+                            "exhausted — parking challenge for retry"
+                        )
+                        result = SolverResult(
+                            flag=None, status=PARKED,
+                            findings_summary="parked: all accounts cooling down",
+                            step_count=0, cost_usd=0.0, log_path="",
+                        )
+                        return result, solver, None
+                    logger.warning(
+                        f"[{self.meta.name}/{model_spec}] Quota hit — rotating to account "
+                        f"'{next_lease.label}'"
+                    )
+                    lease = next_lease
+                    solver = self._create_solver(model_spec, config_dir=lease.config_dir)
+                    self.solvers[model_spec] = solver
+                    await solver.start()
+                    continue
+
+                # No pool in use: legacy fallback to API-backed Pydantic AI solver.
                 fallback_spec = _quota_fallback_spec(model_spec)
                 if fallback_spec:
                     logger.warning(
@@ -290,7 +369,30 @@ class ChallengeSwarm:
                 )
                 continue
 
-        return result, solver
+        return result, solver, lease
+
+    def _compute_parked_until(self) -> None:
+        """If every pooled solver parked and none ran, record when to retry."""
+        if self.winner is not None:
+            self.parked_until = None
+            return
+        if not self._parked_specs or self._ran_specs:
+            self.parked_until = None
+            return
+        pool = get_account_pool()
+        times = []
+        for spec in self._parked_specs:
+            pp = pool_provider_for_spec(provider_from_spec(spec))
+            if pp:
+                t = pool.earliest_cooldown(pp)
+                if t:
+                    times.append(t)
+        # If no cooldown time known (all leases simply busy), retry soon.
+        if times:
+            self.parked_until = min(times)
+        else:
+            import datetime as _dt
+            self.parked_until = _dt.datetime.now(_dt.UTC) + _dt.timedelta(seconds=30)
 
     async def run(self) -> SolverResult | None:
         """Run all solvers in parallel. Returns the winner's result or None."""
@@ -318,6 +420,7 @@ class ChallengeSwarm:
                 tasks = list(pending)
 
             self.cancel_event.set()
+            self._compute_parked_until()
             return self.winner
         except Exception as e:
             logger.error(f"[{self.meta.name}] Swarm error: {e}", exc_info=True)

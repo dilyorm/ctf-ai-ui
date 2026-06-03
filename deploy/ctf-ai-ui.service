@@ -1,0 +1,24 @@
+[Unit]
+Description=CTF Agent UI (FastAPI dashboard + multi-account solver swarm)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Repo checkout on the server.
+WorkingDirectory=/root/ctf-ai-ui
+# Secrets + config (APP_SECRET_KEY, UI_SECRET_KEY, DB_URL/POSTGRES_*, CTFD_*, etc.)
+EnvironmentFile=/root/ctf-ai-ui/.env
+# Bind to localhost; nginx (ctf.dilyor.dev) terminates TLS and proxies to it.
+Environment=UI_HOST=0.0.0.0
+Environment=UI_PORT=8080
+# `uv run` resolves the project venv. Adjust the uv path if `which uv` differs.
+ExecStart=/usr/local/bin/uv run uvicorn ui.server:app --host 0.0.0.0 --port 8080
+Restart=always
+RestartSec=3
+# Solver runs are long-lived; don't kill on a single failed request.
+TimeoutStopSec=30
+KillSignal=SIGINT
+
+[Install]
+WantedBy=multi-user.target

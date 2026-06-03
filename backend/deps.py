@@ -58,3 +58,7 @@ class CoordinatorDeps:
     results: dict[str, dict] = field(default_factory=dict)
     challenge_dirs: dict[str, str] = field(default_factory=dict)
     challenge_metas: dict[str, Any] = field(default_factory=dict)
+
+    # challenge_name -> unix timestamp before which we should NOT re-spawn it
+    # (set when a swarm parked because no pool account was available).
+    parked_until: dict[str, float] = field(default_factory=dict)

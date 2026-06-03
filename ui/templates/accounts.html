@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Accounts · CTF Agent</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <style>
+    .acct-actions { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:18px; }
+    .acct-table { width:100%; border-collapse:collapse; margin-top:8px; }
+    .acct-table th, .acct-table td {
+      text-align:left; padding:10px 12px; border-bottom:1px solid var(--border, #2a2a2a);
+      font-size:14px; vertical-align:middle;
+    }
+    .acct-table th { color:var(--muted, #888); font-weight:600; font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+    .badge { display:inline-block; padding:2px 9px; border-radius:999px; font-size:12px; font-weight:600; }
+    .badge-healthy  { background:#103a24; color:#46d488; }
+    .badge-in_use   { background:#0e2f4a; color:#4aa3ff; }
+    .badge-cooling  { background:#4a3a0e; color:#e6b94a; }
+    .badge-disabled { background:#333; color:#999; }
+    .badge-pending  { background:#3a2a4a; color:#c08aff; }
+    .prov-pill { font-size:11px; padding:1px 7px; border-radius:4px; background:#222; color:#bbb; }
+    .num-input { width:56px; background:#1a1a1a; border:1px solid var(--border,#2a2a2a); color:#eee; border-radius:6px; padding:4px 6px; }
+    .acct-empty { color:var(--muted,#888); padding:28px; text-align:center; }
+    .cool-eta { color:#e6b94a; font-size:12px; }
+    #signin-modal { position:fixed; inset:0; background:rgba(0,0,0,.6); display:none; align-items:center; justify-content:center; z-index:50; }
+    #signin-modal .modal-card { background:#161616; border:1px solid var(--border,#2a2a2a); border-radius:12px; padding:24px; width:min(520px,92vw); }
+    .auth-url-box { background:#1a1a1a; border:1px solid var(--border,#2a2a2a); border-radius:8px; padding:10px; word-break:break-all; font-size:13px; margin:12px 0; }
+  </style>
+</head>
+<body class="page-body">
+
+  <nav class="topnav">
+    <div class="topnav-brand">
+      <span class="brand-icon">⚡</span>
+      <span class="brand-name">CTF Agent</span>
+    </div>
+    <div class="topnav-links">
+      <a href="/" class="nav-link">Dashboard</a>
+      <a href="/ctfs" class="nav-link">CTFs</a>
+      <a href="/accounts" class="nav-link active">Accounts</a>
+      <a href="/settings" class="nav-link">Settings</a>
+    </div>
+    <div class="topnav-user">
+      <span class="nav-email">{{ user.email or user.login }}</span>
+      <a href="/auth/logout" class="btn btn-sm btn-ghost">Logout</a>
+    </div>
+  </nav>
+
+  <div class="page-container">
+    <div class="page-header">
+      <h1 class="page-title">Account Pool</h1>
+      <p class="page-desc">
+        Shared, team-wide pool of subscription accounts. Every account here is used by all runs.
+        When one hits its limit, solvers automatically rotate to the next available account.
+        Add as many as you like.
+      </p>
+    </div>
+
+    <div id="alert" class="alert" style="display:none"></div>
+
+    <div class="acct-actions">
+      <button class="btn btn-primary" onclick="connect('claude')">+ Connect Claude account</button>
+      <button class="btn btn-primary" onclick="connect('codex')">+ Connect Codex account</button>
+      <button class="btn btn-ghost btn-sm" onclick="load()">Refresh</button>
+    </div>
+
+    <table class="acct-table">
+      <thead>
+        <tr>
+          <th>Provider</th><th>Label</th><th>Owner</th><th>Status</th>
+          <th>Concurrency</th><th>Max</th><th></th>
+        </tr>
+      </thead>
+      <tbody id="acct-rows">
+        <tr><td colspan="7" class="acct-empty">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Sign-in modal -->
+  <div id="signin-modal">
+    <div class="modal-card">
+      <h3 id="modal-title">Connect account</h3>
+      <p id="modal-msg" class="hint"></p>
+      <div id="modal-url" style="display:none">
+        <div class="auth-url-box" id="modal-url-text"></div>
+        <a id="modal-url-link" href="#" target="_blank" rel="noopener" class="btn btn-primary btn-sm">Open sign-in page</a>
+      </div>
+      <p id="modal-status" class="hint" style="margin-top:14px"></p>
+      <div style="margin-top:18px; display:flex; gap:8px; justify-content:flex-end">
+        <button class="btn btn-ghost btn-sm" onclick="closeModal()">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let pollTimer = null;
+    let listTimer = null;
+
+    function showAlert(msg, ok) {
+      const a = document.getElementById('alert');
+      a.textContent = msg;
+      a.className = 'alert ' + (ok ? 'alert-success' : 'alert-error');
+      a.style.display = 'block';
+      setTimeout(() => { a.style.display = 'none'; }, 5000);
+    }
+
+    function coolEta(iso) {
+      if (!iso) return '';
+      const ms = new Date(iso).getTime() - Date.now();
+      if (ms <= 0) return '';
+      const m = Math.ceil(ms / 60000);
+      return m >= 60 ? `${Math.floor(m/60)}h ${m%60}m` : `${m}m`;
+    }
+
+    async function load() {
+      const r = await fetch('/api/accounts');
+      const d = await r.json();
+      const tb = document.getElementById('acct-rows');
+      if (!d.accounts || !d.accounts.length) {
+        tb.innerHTML = '<tr><td colspan="7" class="acct-empty">No accounts yet. Connect one above.</td></tr>';
+        return;
+      }
+      tb.innerHTML = d.accounts.map(a => {
+        const eta = a.status === 'cooling' ? coolEta(a.cooldown_until) : '';
+        const statusCell = `<span class="badge badge-${a.status}">${a.status.replace('_',' ')}</span>`
+          + (eta ? ` <span class="cool-eta">${eta}</span>` : '');
+        return `<tr>
+          <td><span class="prov-pill">${a.provider}</span></td>
+          <td>${escapeHtml(a.label)}</td>
+          <td>${escapeHtml(a.owner || '—')}</td>
+          <td>${statusCell}</td>
+          <td>${a.active_leases}/${a.max_concurrent}</td>
+          <td><input class="num-input" type="number" min="1" max="20" value="${a.max_concurrent}"
+                onchange="setMax(${a.id}, this.value)"></td>
+          <td style="white-space:nowrap">
+            <button class="btn btn-sm btn-ghost" onclick="toggle(${a.id}, ${a.disabled})">${a.disabled ? 'Enable' : 'Disable'}</button>
+            <button class="btn btn-sm btn-ghost" onclick="remove(${a.id})" style="color:#e66">Remove</button>
+          </td>
+        </tr>`;
+      }).join('');
+    }
+
+    function escapeHtml(s) { return (s || '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+    async function setMax(id, val) {
+      await fetch(`/api/accounts/${id}`, {
+        method: 'PATCH', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ max_concurrent: parseInt(val, 10) }),
+      });
+      load();
+    }
+    async function toggle(id, disabled) {
+      await fetch(`/api/accounts/${id}`, {
+        method: 'PATCH', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ disabled: !disabled }),
+      });
+      load();
+    }
+    async function remove(id) {
+      if (!confirm('Remove this account and delete its credentials from the server?')) return;
+      await fetch(`/api/accounts/${id}`, { method: 'DELETE' });
+      load();
+    }
+
+    function closeModal() {
+      document.getElementById('signin-modal').style.display = 'none';
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+      load();
+    }
+
+    async function connect(provider) {
+      const modal = document.getElementById('signin-modal');
+      const title = document.getElementById('modal-title');
+      const msg = document.getElementById('modal-msg');
+      const urlBox = document.getElementById('modal-url');
+      const statusEl = document.getElementById('modal-status');
+      title.textContent = `Connect ${provider} account`;
+      msg.textContent = 'Starting sign-in…';
+      urlBox.style.display = 'none';
+      statusEl.textContent = '';
+      modal.style.display = 'flex';
+
+      const r = await fetch(`/api/accounts/${provider}/start`, {
+        method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}',
+      });
+      const d = await r.json();
+      if (!d.ok) {
+        msg.textContent = d.error || 'Failed to start sign-in.';
+        if (d.hint) statusEl.textContent = d.hint;
+        return;
+      }
+      if (d.status === 'authenticated') {
+        msg.textContent = 'Account connected and added to the pool.';
+        showAlert('Account connected.', true);
+        return;
+      }
+      if (d.auth_url) {
+        msg.textContent = 'Open this URL, sign in with the account you want to add, then come back — this updates automatically.';
+        urlBox.style.display = 'block';
+        document.getElementById('modal-url-text').textContent = d.auth_url;
+        document.getElementById('modal-url-link').href = d.auth_url;
+      } else {
+        msg.textContent = d.message || 'Follow the CLI sign-in steps on the server.';
+      }
+      statusEl.textContent = 'Waiting for sign-in to complete…';
+      const id = d.account_id;
+      pollTimer = setInterval(async () => {
+        const cr = await fetch(`/api/accounts/${id}/check`);
+        const cd = await cr.json();
+        if (cd.status === 'authenticated') {
+          clearInterval(pollTimer); pollTimer = null;
+          statusEl.textContent = 'Connected! Added to the pool.';
+          showAlert('Account connected.', true);
+          load();
+        }
+      }, 3000);
+    }
+
+    load();
+    listTimer = setInterval(load, 5000);
+  </script>
+</body>
+</html>

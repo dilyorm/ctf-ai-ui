@@ -17,7 +17,8 @@ import os
 import re
 import secrets
 import shutil
-from datetime import datetime, timezone
+import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
 import uvicorn
@@ -29,12 +30,19 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.middleware.sessions import SessionMiddleware
 
+from backend.account_pool import get_account_pool
 from backend.auth import hash_password, verify_password
+from backend.cli_auth import (
+    CLAUDE_CONFIG_ROOT,
+    CODEX_CONFIG_ROOT,
+    claude_is_authenticated,
+    codex_is_authenticated,
+)
 from backend.config import Settings
 from backend.crypto import open_opt, seal_opt
 from backend.db import get_db
 from backend.db_models import CTF as CTFModel
-from backend.db_models import User, UserModelPref, UserSettings
+from backend.db_models import PooledAccount, User, UserModelPref, UserSettings
 from backend.models import ALL_MODELS, DEFAULT_MODELS
 from backend.run_manager import get_run_manager
 from ui.event_bus import get_bus
@@ -183,6 +191,16 @@ async def settings_page(request: Request, db: AsyncSession = Depends(get_db)):
             "enabled_specs": enabled_specs,
             "saved": request.query_params.get("saved") == "1",
         },
+    )
+
+
+@app.get("/accounts", response_class=HTMLResponse)
+async def accounts_page(request: Request):
+    user = _get_user(request)
+    if not user:
+        return RedirectResponse("/login")
+    return templates.TemplateResponse(
+        request=request, name="accounts.html", context={"user": user}
     )
 
 
@@ -442,7 +460,7 @@ async def api_config(
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e), "hint": "Set APP_SECRET_KEY."}, status_code=500)
 
-    st.updated_at = datetime.now(timezone.utc)
+    st.updated_at = datetime.now(UTC)
     await db.commit()
     return JSONResponse({"ok": True})
 
@@ -831,7 +849,7 @@ async def _capture_cli_auth_url(
         while True:
             try:
                 raw = await asyncio.wait_for(stream.readline(), timeout=2.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 break
             if not raw:
                 break
@@ -842,7 +860,7 @@ async def _capture_cli_auth_url(
             asyncio.gather(_read(proc.stdout), _read(proc.stderr)),
             timeout=timeout,
         )
-    except asyncio.TimeoutError:
+    except TimeoutError:
         pass
     finally:
         try:
@@ -951,7 +969,7 @@ async def api_claude_auth_check(
                 st = UserSettings(user_id=user.id)
                 db.add(st)
             st.claude_config_dir = config_dir
-            st.updated_at = datetime.now(timezone.utc)
+            st.updated_at = datetime.now(UTC)
             await db.commit()
         return JSONResponse({"ok": True, "status": "authenticated", "config_dir": config_dir})
 
@@ -1083,11 +1101,250 @@ async def api_codex_auth_check(
                 st = UserSettings(user_id=user.id)
                 db.add(st)
             st.codex_config_dir = config_dir
-            st.updated_at = datetime.now(timezone.utc)
+            st.updated_at = datetime.now(UTC)
             await db.commit()
         return JSONResponse({"ok": True, "status": "authenticated", "config_dir": config_dir})
 
     return JSONResponse({"ok": True, "status": "pending"})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Shared account pool API (team-wide, multi-account failover)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _new_account_config_dir(provider: str) -> str:
+    root = CLAUDE_CONFIG_ROOT if provider == "claude" else CODEX_CONFIG_ROOT
+    return os.path.join(root, f"acct-{uuid.uuid4().hex[:12]}")
+
+
+async def _spawn_claude_signin(config_dir: str) -> dict:
+    """Spawn the Claude CLI sign-in in *config_dir*; return status + auth_url."""
+    claude_bin = shutil.which("claude") or "claude"
+    os.makedirs(config_dir, exist_ok=True)
+    if claude_is_authenticated(config_dir):
+        return {"status": "authenticated"}
+    env = {
+        **os.environ,
+        "CLAUDE_CONFIG_DIR": config_dir,
+        "CLAUDECODE": "",
+        "DISPLAY": "",
+        "BROWSER": "echo",
+        "NO_COLOR": "1",
+    }
+    try:
+        urls, _ = await _capture_cli_auth_url([claude_bin], env=env, timeout=12.0)
+    except FileNotFoundError:
+        return {
+            "error": "Claude CLI not found on this server.",
+            "hint": "Install: npm install -g @anthropic-ai/claude-code",
+            "status_code": 404,
+        }
+    auth_urls = [u for u in urls if any(d in u for d in ("claude.ai", "anthropic.com"))] or urls
+    if auth_urls:
+        return {"status": "pending", "auth_url": auth_urls[0]}
+    if claude_is_authenticated(config_dir):
+        return {"status": "authenticated"}
+    return {"status": "manual", "message": "Could not capture auth URL; claude may need a TTY."}
+
+
+async def _spawn_codex_signin(config_dir: str) -> dict:
+    """Spawn the Codex CLI sign-in in *config_dir* (as HOME); return status + auth_url."""
+    codex_bin = shutil.which("codex") or "codex"
+    os.makedirs(config_dir, exist_ok=True)
+    if codex_is_authenticated(config_dir):
+        return {"status": "authenticated"}
+    if not shutil.which(codex_bin) and not os.path.isfile(codex_bin):
+        return {
+            "error": "Codex CLI not found on this server.",
+            "hint": "Install: npm install -g @openai/codex",
+            "status_code": 404,
+        }
+    env = {
+        **os.environ,
+        "HOME": config_dir,
+        "DISPLAY": "",
+        "BROWSER": "echo",
+        "NO_COLOR": "1",
+        "CODEX_DISABLE_TELEMETRY": "1",
+    }
+    env.pop("OPENAI_API_KEY", None)
+    for subcmd in (["auth", "login"], ["login"], ["auth"]):
+        try:
+            urls, _ = await _capture_cli_auth_url([codex_bin, *subcmd], env=env, timeout=10.0)
+        except FileNotFoundError:
+            break
+        auth_urls = [
+            u for u in urls if any(d in u for d in ("openai.com", "auth0.com", "chatgpt.com"))
+        ] or [u for u in urls if u]
+        if auth_urls:
+            return {"status": "pending", "auth_url": auth_urls[0]}
+    if codex_is_authenticated(config_dir):
+        return {"status": "authenticated"}
+    return {"status": "manual", "message": "Could not capture auth URL. Follow manual steps."}
+
+
+@app.get("/api/accounts")
+async def api_accounts_list(
+    user: User = Depends(_require_db_user), db: AsyncSession = Depends(get_db)
+):
+    """List every account in the shared pool with live runtime status."""
+    rows = (await db.execute(select(PooledAccount))).scalars().all()
+    # Map owner ids to emails for display.
+    owner_ids = {r.owner_user_id for r in rows if r.owner_user_id}
+    owners: dict[int, str] = {}
+    if owner_ids:
+        for u in (
+            await db.execute(select(User).where(User.id.in_(owner_ids)))
+        ).scalars().all():
+            owners[u.id] = u.email
+    live = {s["id"]: s for s in get_account_pool().snapshot()}
+    out = []
+    for r in rows:
+        authed = (
+            claude_is_authenticated(r.config_dir)
+            if r.provider == "claude"
+            else codex_is_authenticated(r.config_dir)
+        )
+        snap = live.get(r.id)
+        if not authed:
+            status = "pending"
+        elif snap:
+            status = snap["status"]
+        elif r.disabled:
+            status = "disabled"
+        else:
+            status = "healthy"
+        out.append(
+            {
+                "id": r.id,
+                "provider": r.provider,
+                "label": r.label or r.config_dir,
+                "owner": owners.get(r.owner_user_id, ""),
+                "owner_user_id": r.owner_user_id,
+                "max_concurrent": r.max_concurrent,
+                "disabled": r.disabled,
+                "authenticated": authed,
+                "status": status,
+                "active_leases": (snap or {}).get("active_leases", 0),
+                "cooldown_until": (snap or {}).get("cooldown_until")
+                or (r.cooldown_until.isoformat() if r.cooldown_until else None),
+            }
+        )
+    out.sort(key=lambda a: (a["provider"], a["id"]))
+    return JSONResponse({"ok": True, "accounts": out})
+
+
+@app.post("/api/accounts/{provider}/start")
+async def api_account_connect_start(
+    provider: str,
+    request: Request,
+    user: User = Depends(_require_db_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Begin connecting a NEW account to the shared pool via CLI web sign-in.
+
+    Each connect creates its own isolated config dir + pool row, so any user can
+    add as many accounts as they want.
+    """
+    if provider not in ("claude", "codex"):
+        return JSONResponse({"ok": False, "error": "unknown provider"}, status_code=400)
+    body = await request.json() if await request.body() else {}
+    label = (body.get("label") or "").strip()
+
+    config_dir = _new_account_config_dir(provider)
+    acct = PooledAccount(
+        provider=provider,
+        label=label or f"{provider}-{config_dir.rsplit('-', 1)[-1]}",
+        owner_user_id=user.id,
+        config_dir=config_dir,
+        max_concurrent=int(body.get("max_concurrent") or 1),
+    )
+    db.add(acct)
+    await db.commit()
+    await db.refresh(acct)
+
+    result = (
+        await _spawn_claude_signin(config_dir)
+        if provider == "claude"
+        else await _spawn_codex_signin(config_dir)
+    )
+    if "error" in result:
+        # Roll back the half-created account so the pool isn't polluted.
+        await db.delete(acct)
+        await db.commit()
+        return JSONResponse(
+            {"ok": False, **result}, status_code=result.get("status_code", 400)
+        )
+    if result.get("status") == "authenticated":
+        await get_account_pool().reload()
+    return JSONResponse({"ok": True, "account_id": acct.id, **result})
+
+
+@app.get("/api/accounts/{account_id}/check")
+async def api_account_check(
+    account_id: int,
+    user: User = Depends(_require_db_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Poll whether a connecting account finished CLI sign-in."""
+    acct = await db.get(PooledAccount, account_id)
+    if not acct:
+        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+    authed = (
+        claude_is_authenticated(acct.config_dir)
+        if acct.provider == "claude"
+        else codex_is_authenticated(acct.config_dir)
+    )
+    if authed:
+        await get_account_pool().reload()
+        return JSONResponse({"ok": True, "status": "authenticated"})
+    return JSONResponse({"ok": True, "status": "pending"})
+
+
+@app.patch("/api/accounts/{account_id}")
+async def api_account_update(
+    account_id: int,
+    request: Request,
+    user: User = Depends(_require_db_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update label / max_concurrent / disabled for a pool account."""
+    acct = await db.get(PooledAccount, account_id)
+    if not acct:
+        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+    body = await request.json()
+    if "label" in body:
+        acct.label = (body["label"] or "").strip() or acct.label
+    if "max_concurrent" in body:
+        acct.max_concurrent = max(1, min(int(body["max_concurrent"]), 20))
+    if "disabled" in body:
+        acct.disabled = bool(body["disabled"])
+    await db.commit()
+    await get_account_pool().reload()
+    return JSONResponse({"ok": True})
+
+
+@app.delete("/api/accounts/{account_id}")
+async def api_account_delete(
+    account_id: int,
+    user: User = Depends(_require_db_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Remove an account from the pool and delete its credentials from disk."""
+    acct = await db.get(PooledAccount, account_id)
+    if not acct:
+        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+    config_dir = acct.config_dir
+    await db.delete(acct)
+    await db.commit()
+    # Only remove directories under our managed roots (defense against bad data).
+    if config_dir and (
+        config_dir.startswith(CLAUDE_CONFIG_ROOT) or config_dir.startswith(CODEX_CONFIG_ROOT)
+    ):
+        shutil.rmtree(config_dir, ignore_errors=True)
+    await get_account_pool().reload()
+    return JSONResponse({"ok": True})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1104,7 +1361,7 @@ async def websocket_endpoint(ws: WebSocket):
         while True:
             msg = await asyncio.wait_for(queue.get(), timeout=30.0)
             await ws.send_text(msg)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         pass
     except WebSocketDisconnect:
         pass

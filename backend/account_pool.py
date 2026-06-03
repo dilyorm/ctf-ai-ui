@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from sqlalchemy import select
 
 from backend.cli_auth import is_authenticated
+from backend.crypto import open_opt
 from backend.db import SessionLocal
 from backend.db_models import PooledAccount
 
@@ -38,7 +39,11 @@ DEFAULT_COOLDOWN_SECONDS = 3600  # 1 hour (conservative)
 _SPEC_PROVIDER_TO_POOL = {
     "claude-sdk": "claude",
     "codex": "codex",
+    "copilot": "copilot",
 }
+
+# Token-based pool providers store their credential in secret_enc (not a config dir).
+_TOKEN_PROVIDERS = {"copilot"}
 
 
 def pool_provider_for_spec(spec_provider: str) -> str | None:
@@ -61,6 +66,8 @@ class _Account:
     cooldown_until: dt.datetime | None
     last_used_at: dt.datetime | None
     active_leases: int = 0
+    # Decrypted credential for token providers (copilot). "" for config-dir providers.
+    secret: str = ""
 
     def available(self, now: dt.datetime) -> bool:
         if self.disabled:
@@ -78,6 +85,8 @@ class Lease:
     provider: str
     config_dir: str
     label: str
+    # Decrypted credential for token providers (copilot). "" for config-dir providers.
+    secret: str = ""
 
 
 @dataclass
@@ -97,8 +106,16 @@ class AccountPool:
                 rows = (await db.execute(select(PooledAccount))).scalars().all()
                 new: dict[int, _Account] = {}
                 for r in rows:
-                    if not is_authenticated(r.provider, r.config_dir):
-                        continue
+                    secret = ""
+                    if r.provider in _TOKEN_PROVIDERS:
+                        # Token providers: authenticated iff a credential is stored.
+                        secret = open_opt(r.secret_enc) if r.secret_enc else ""
+                        if not secret:
+                            continue
+                    else:
+                        # Config-dir providers: credentials must exist on disk.
+                        if not is_authenticated(r.provider, r.config_dir):
+                            continue
                     new[r.id] = _Account(
                         id=r.id,
                         provider=r.provider,
@@ -109,6 +126,7 @@ class AccountPool:
                         cooldown_until=r.cooldown_until,
                         last_used_at=r.last_used_at,
                         active_leases=prev_leases.get(r.id, 0),
+                        secret=secret,
                     )
             self._accounts = new
             logger.info("Account pool loaded: %d authenticated account(s)", len(new))
@@ -144,6 +162,7 @@ class AccountPool:
                 provider=acct.provider,
                 config_dir=acct.config_dir,
                 label=acct.label,
+                secret=acct.secret,
             )
 
     async def release(self, lease: Lease) -> None:

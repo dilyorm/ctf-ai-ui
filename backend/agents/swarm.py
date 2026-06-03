@@ -82,17 +82,24 @@ class ChallengeSwarm:
     _parked_specs: set = field(default_factory=set)
     _ran_specs: set = field(default_factory=set)
 
-    def _create_solver(self, model_spec: str, config_dir: str | None = None):
+    def _create_solver(self, model_spec: str, lease: Lease | None = None):
         """Create the right solver type based on provider.
 
         - claude-sdk/* → ClaudeSolver (Claude Agent SDK, subscription-first)
         - codex/* → CodexSolver (Codex App Server, subscription-first)
-        - bedrock/*, azure/*, zen/*, google/* → Pydantic AI Solver (API)
+        - copilot/* → Pydantic AI Solver using the leased account's gho_ token
+        - bedrock/*, azure/*, zen/*, google/* → Pydantic AI Solver (API key)
+
+        For CLI providers the lease supplies an isolated config dir; for token
+        providers (copilot) it supplies the credential injected into settings.
         """
         provider = provider_from_spec(model_spec)
 
         def _submit_fn(flag): return self.try_submit_flag(flag, model_spec)
         _notify = self._make_notify_fn(model_spec)
+
+        # CLI providers consume the leased config dir; token providers don't.
+        config_dir = lease.config_dir if (lease and provider in ("claude-sdk", "codex")) else None
 
         if provider == "claude-sdk":
             from backend.agents.claude_solver import ClaudeSolver
@@ -128,7 +135,17 @@ class ChallengeSwarm:
                 config_dir=config_dir,
             )
 
-        return self._create_pydantic_solver(model_spec)
+        # Pydantic AI solver. For copilot, inject the leased token so the
+        # solver authenticates with this pool account (not per-user settings).
+        settings_override = None
+        if provider == "copilot" and lease and lease.secret:
+            try:
+                settings_override = self.settings.model_copy(
+                    update={"github_copilot_oauth_token": lease.secret}
+                )
+            except Exception:
+                settings_override = self.settings
+        return self._create_pydantic_solver(model_spec, settings=settings_override)
 
     def _make_notify_fn(self, model_spec: str):
         """Create a callback that pushes solver messages to the coordinator inbox."""
@@ -139,15 +156,19 @@ class ChallengeSwarm:
                 )
         return _notify
 
-    def _create_pydantic_solver(self, model_spec: str, sandbox=None, owns_sandbox: bool | None = None) -> Solver:
-        """Create a Pydantic AI solver. Pass sandbox to reuse an existing container (quota fallback)."""
+    def _create_pydantic_solver(self, model_spec: str, sandbox=None, owns_sandbox: bool | None = None, settings=None) -> Solver:
+        """Create a Pydantic AI solver. Pass sandbox to reuse an existing container (quota fallback).
+
+        `settings` overrides the swarm's settings (used to inject a leased
+        copilot token for a specific pool account).
+        """
         solver = Solver(
             model_spec=model_spec,
             challenge_dir=self.challenge_dir,
             meta=self.meta,
             ctfd=self.ctfd,
             cost_tracker=self.cost_tracker,
-            settings=self.settings,
+            settings=settings or self.settings,
             cancel_event=self.cancel_event,
             sandbox=sandbox,
             owns_sandbox=owns_sandbox,
@@ -228,7 +249,7 @@ class ChallengeSwarm:
                     step_count=0, cost_usd=0.0, log_path="",
                 )
 
-        solver = self._create_solver(model_spec, config_dir=lease.config_dir if lease else None)
+        solver = self._create_solver(model_spec, lease=lease)
         self.solvers[model_spec] = solver
         self._ran_specs.add(model_spec)
 
@@ -313,7 +334,7 @@ class ChallengeSwarm:
                         f"'{next_lease.label}'"
                     )
                     lease = next_lease
-                    solver = self._create_solver(model_spec, config_dir=lease.config_dir)
+                    solver = self._create_solver(model_spec, lease=lease)
                     self.solvers[model_spec] = solver
                     await solver.start()
                     continue

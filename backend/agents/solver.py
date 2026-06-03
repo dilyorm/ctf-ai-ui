@@ -28,7 +28,15 @@ from backend.models import (
 from backend.output_types import FlagFound
 from backend.prompts import ChallengeMeta, build_prompt, list_distfiles
 from backend.sandbox import DockerSandbox
-from backend.solver_base import CANCELLED, CORRECT_MARKERS, ERROR, FLAG_FOUND, GAVE_UP, SolverResult
+from backend.solver_base import (
+    CANCELLED,
+    CORRECT_MARKERS,
+    ERROR,
+    FLAG_FOUND,
+    GAVE_UP,
+    QUOTA_ERROR,
+    SolverResult,
+)
 from backend.tools.flag import submit_flag
 from backend.tools.sandbox import (
     bash,
@@ -262,6 +270,15 @@ class Solver:
             logger.error(f"[{self.agent_name}] Error: {e}", exc_info=True)
             self._findings = f"Error: {e}"
             self.tracer.event("error", error=str(e))
+            # Classify quota/rate-limit so the swarm can rotate to another pool
+            # account (e.g. Copilot 429 / usage exhausted).
+            err = str(e).lower()
+            if any(
+                k in err
+                for k in ("quota", "rate limit", "rate_limit", "429", "too many requests",
+                          "insufficient", "capacity", "overloaded")
+            ):
+                return self._result(QUOTA_ERROR)
             return self._result(ERROR)
 
     def bump(self, insights: str) -> None:

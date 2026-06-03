@@ -1720,8 +1720,21 @@ async def api_codex_auth_check(
 
 
 def _new_account_config_dir(provider: str) -> str:
+    if provider == "copilot":
+        # Token provider: no on-disk config dir. Use a synthetic unique value
+        # to satisfy the NOT NULL + UNIQUE constraint on config_dir.
+        return f"copilot:{uuid.uuid4().hex}"
     root = CLAUDE_CONFIG_ROOT if provider == "claude" else CODEX_CONFIG_ROOT
     return os.path.join(root, f"acct-{uuid.uuid4().hex[:12]}")
+
+
+def _account_authed(acct: PooledAccount) -> bool:
+    """True if a pool account has usable credentials (token present, or CLI creds on disk)."""
+    if acct.provider == "copilot":
+        return bool(acct.secret_enc)
+    if acct.provider == "claude":
+        return claude_is_authenticated(acct.config_dir)
+    return codex_is_authenticated(acct.config_dir)
 
 
 async def _spawn_claude_signin(config_dir: str) -> dict:
@@ -1807,11 +1820,7 @@ async def api_accounts_list(
     live = {s["id"]: s for s in get_account_pool().snapshot()}
     out = []
     for r in rows:
-        authed = (
-            claude_is_authenticated(r.config_dir)
-            if r.provider == "claude"
-            else codex_is_authenticated(r.config_dir)
-        )
+        authed = _account_authed(r)
         snap = live.get(r.id)
         if not authed:
             status = "pending"
@@ -1853,7 +1862,7 @@ async def api_account_connect_start(
     Each connect creates its own isolated config dir + pool row, so any user can
     add as many accounts as they want.
     """
-    if provider not in ("claude", "codex"):
+    if provider not in ("claude", "codex", "copilot"):
         return JSONResponse({"ok": False, "error": "unknown provider"}, status_code=400)
     body = await request.json() if await request.body() else {}
     label = (body.get("label") or "").strip()
@@ -1861,7 +1870,7 @@ async def api_account_connect_start(
     config_dir = _new_account_config_dir(provider)
     acct = PooledAccount(
         provider=provider,
-        label=label or f"{provider}-{config_dir.rsplit('-', 1)[-1]}",
+        label=label or f"{provider}-{config_dir.rsplit('-', 1)[-1][:8]}",
         owner_user_id=user.id,
         config_dir=config_dir,
         max_concurrent=int(body.get("max_concurrent") or 1),
@@ -1869,6 +1878,29 @@ async def api_account_connect_start(
     db.add(acct)
     await db.commit()
     await db.refresh(acct)
+
+    # Copilot: GitHub OAuth device flow (token), not a CLI config-dir sign-in.
+    if provider == "copilot":
+        from backend.copilot_auth import CopilotAuthError, start_device_flow
+
+        try:
+            data = await start_device_flow()
+        except CopilotAuthError as e:
+            await db.delete(acct)
+            await db.commit()
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=502)
+        request.session[f"copilot_pool_device_{acct.id}"] = data["device_code"]
+        return JSONResponse(
+            {
+                "ok": True,
+                "account_id": acct.id,
+                "status": "device",
+                "user_code": data["user_code"],
+                "verification_uri": data.get("verification_uri") or "https://github.com/login/device",
+                "interval": int(data.get("interval", 5)),
+                "expires_in": int(data.get("expires_in", 900)),
+            }
+        )
 
     result = (
         await _spawn_claude_signin(config_dir)
@@ -1887,22 +1919,73 @@ async def api_account_connect_start(
     return JSONResponse({"ok": True, "account_id": acct.id, **result})
 
 
+@app.post("/api/accounts/{account_id}/copilot/poll")
+async def api_account_copilot_poll(
+    account_id: int,
+    request: Request,
+    user: User = Depends(_require_db_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Poll the GitHub device flow for a connecting Copilot pool account.
+
+    On success: validate Copilot access, seal the token into the account, and
+    reload the pool so it becomes leasable.
+    """
+    from backend.copilot_auth import CopilotAuthError, get_session_token, poll_device_flow
+
+    acct = await db.get(PooledAccount, account_id)
+    if not acct or acct.provider != "copilot":
+        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+
+    sess_key = f"copilot_pool_device_{account_id}"
+    device_code = request.session.get(sess_key)
+    if not device_code:
+        return JSONResponse(
+            {"ok": False, "error": "No device flow in progress. Connect again."}, status_code=400
+        )
+
+    try:
+        result = await poll_device_flow(device_code)
+    except CopilotAuthError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=502)
+
+    status = result.get("status")
+    if status in ("pending", "slow_down"):
+        return JSONResponse({"ok": True, "status": status})
+    if status in ("expired", "denied"):
+        request.session.pop(sess_key, None)
+        return JSONResponse({"ok": True, "status": status})
+    if status != "ok":
+        return JSONResponse({"ok": False, "error": f"unexpected status: {status}"}, status_code=500)
+
+    token = result["access_token"]
+    try:
+        await asyncio.to_thread(get_session_token, token)
+    except CopilotAuthError as e:
+        request.session.pop(sess_key, None)
+        return JSONResponse(
+            {"ok": False, "error": f"GitHub authorized, but no Copilot access: {e}"},
+            status_code=502,
+        )
+
+    acct.secret_enc = seal_opt(token)
+    await db.commit()
+    request.session.pop(sess_key, None)
+    await get_account_pool().reload()
+    return JSONResponse({"ok": True, "status": "connected"})
+
+
 @app.get("/api/accounts/{account_id}/check")
 async def api_account_check(
     account_id: int,
     user: User = Depends(_require_db_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Poll whether a connecting account finished CLI sign-in."""
+    """Poll whether a connecting account finished sign-in."""
     acct = await db.get(PooledAccount, account_id)
     if not acct:
         return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
-    authed = (
-        claude_is_authenticated(acct.config_dir)
-        if acct.provider == "claude"
-        else codex_is_authenticated(acct.config_dir)
-    )
-    if authed:
+    if _account_authed(acct):
         await get_account_pool().reload()
         return JSONResponse({"ok": True, "status": "authenticated"})
     return JSONResponse({"ok": True, "status": "pending"})

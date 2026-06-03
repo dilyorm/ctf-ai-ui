@@ -130,7 +130,7 @@ class PooledAccount(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
 
-    # Subscription provider: "claude" | "codex"
+    # Pool provider: "claude" | "codex" (CLI config-dir auth) | "copilot" (token auth)
     provider: Mapped[str] = mapped_column(String(32), index=True)
 
     # Human-friendly name shown on the dashboard (e.g. "alice-claude-max")
@@ -141,8 +141,14 @@ class PooledAccount(Base):
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
     )
 
-    # Isolated CLI config home holding this account's OAuth credentials.
+    # For CLI providers (claude/codex): isolated config home holding OAuth creds.
+    # For token providers (copilot): a synthetic unique placeholder ("copilot:<uuid>")
+    # since the credential lives in secret_enc, not on disk.
     config_dir: Mapped[str] = mapped_column(String(500))
+
+    # Encrypted credential for token-based providers (copilot gho_ token). Empty
+    # for config-dir providers. Fernet-sealed via backend.crypto.
+    secret_enc: Mapped[bytes] = mapped_column(LargeBinary, default=b"")
 
     # Max solvers that may use this account concurrently (subscriptions rate-limit
     # hard on parallel sessions — default 1).

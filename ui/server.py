@@ -1748,7 +1748,8 @@ async def api_agent_action(
     Body: {challenge, model_spec, text?}. model_spec carries slashes so it's
     passed in the body, not the path.
     """
-    if action not in ("message", "stop", "pause", "resume", "restart"):
+    valid = ("message", "stop", "pause", "resume", "restart", "swap_account", "swap_model")
+    if action not in valid:
         return JSONResponse({"ok": False, "error": "unknown action"}, status_code=400)
     body = await request.json()
     challenge = (body.get("challenge") or "").strip()
@@ -1769,8 +1770,16 @@ async def api_agent_action(
         ok = swarm.pause_agent(model_spec)
     elif action == "resume":
         ok = swarm.resume_agent(model_spec)
-    else:  # restart
+    elif action == "restart":
         ok = swarm.restart_agent(model_spec)
+    elif action == "swap_account":
+        acct_id = body.get("account_id")
+        ok = swarm.swap_account(model_spec, int(acct_id) if acct_id else None)
+    else:  # swap_model
+        new_spec = (body.get("new_spec") or "").strip()
+        if not new_spec:
+            return JSONResponse({"ok": False, "error": "new_spec required"}, status_code=400)
+        ok = swarm.swap_model(model_spec, new_spec)
     return JSONResponse({"ok": bool(ok), "action": action, "model_spec": model_spec})
 
 

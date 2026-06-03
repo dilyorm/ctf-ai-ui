@@ -357,6 +357,8 @@ function updateModelsGrid(ch) {
           <button class="agent-btn" data-act="message" title="Send instruction">✎</button>
           <button class="agent-btn" data-act="${info.paused ? "resume" : "pause"}" title="${info.paused ? "Resume" : "Pause"}">${info.paused ? "▶" : "⏸"}</button>
           <button class="agent-btn" data-act="restart" title="Restart agent">↻</button>
+          <button class="agent-btn" data-act="swap_account" title="Swap to another account">⇄</button>
+          <button class="agent-btn" data-act="swap_model" title="Swap model">≡</button>
           <button class="agent-btn" data-act="stop" title="Stop agent">⏹</button>
           <label class="agent-btn" title="Attach context file">📎<input type="file" data-act="context" hidden></label>
         </div>
@@ -388,8 +390,11 @@ function wireAgentControls() {
     if (act === "message") {
       const text = prompt(`Instruction for ${spec.split("/").pop()}:`);
       if (text) await post("message", spec, { text });
+    } else if (act === "swap_model") {
+      const newSpec = prompt(`Swap ${spec} to which model spec?\n(e.g. claude-sdk/claude-opus-4-6/max, codex/gpt-5.4, copilot/gpt-5)`, spec);
+      if (newSpec && newSpec !== spec) await post("swap_model", spec, { new_spec: newSpec.trim() });
     } else {
-      await post(act, spec, {});
+      await post(act, spec, {}); // stop / pause / resume / restart / swap_account (rotate)
     }
   });
 

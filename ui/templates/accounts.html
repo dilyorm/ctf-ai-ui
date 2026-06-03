@@ -14,11 +14,11 @@
     }
     .acct-table th { color:var(--muted, #888); font-weight:600; font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
     .badge { display:inline-block; padding:2px 9px; border-radius:999px; font-size:12px; font-weight:600; }
-    .badge-healthy  { background:#103a24; color:#46d488; }
-    .badge-in_use   { background:#0e2f4a; color:#4aa3ff; }
-    .badge-cooling  { background:#4a3a0e; color:#e6b94a; }
-    .badge-disabled { background:#333; color:#999; }
-    .badge-pending  { background:#3a2a4a; color:#c08aff; }
+    .badge-healthy  { background:color-mix(in oklch, var(--green) 18%, transparent); color:var(--green); }
+    .badge-in_use   { background:color-mix(in oklch, var(--cyan) 18%, transparent); color:var(--cyan); }
+    .badge-cooling  { background:color-mix(in oklch, var(--accent) 18%, transparent); color:var(--accent); }
+    .badge-disabled { background:var(--bg4); color:var(--text3); }
+    .badge-pending  { background:color-mix(in oklch, var(--purple) 18%, transparent); color:var(--purple); }
     .prov-pill { font-size:11px; padding:1px 7px; border-radius:4px; background:#222; color:#bbb; }
     .num-input { width:56px; background:#1a1a1a; border:1px solid var(--border,#2a2a2a); color:#eee; border-radius:6px; padding:4px 6px; }
     .acct-empty { color:var(--muted,#888); padding:28px; text-align:center; }

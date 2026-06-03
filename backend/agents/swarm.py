@@ -59,6 +59,10 @@ class AgentControl:
     cancel: asyncio.Event = field(default_factory=asyncio.Event)
     restart: asyncio.Event = field(default_factory=asyncio.Event)
     paused: bool = False
+    # Account swap: on next restart, re-lease excluding current (rotate) or
+    # preferring a specific account id.
+    swap_exclude_current: bool = False
+    swap_prefer_id: int | None = None
 
 
 @dataclass
@@ -94,6 +98,8 @@ class ChallengeSwarm:
 
     # Per-agent operator controls, keyed by model_spec.
     agent_controls: dict[str, AgentControl] = field(default_factory=dict)
+    # Live solver tasks keyed by model_spec (lets run() pick up swapped-in models).
+    _tasks: dict[str, asyncio.Task] = field(default_factory=dict)
 
     def _control(self, model_spec: str) -> AgentControl:
         ctrl = self.agent_controls.get(model_spec)
@@ -135,6 +141,30 @@ class ChallengeSwarm:
         ctrl.paused = False
         ctrl.restart.set()
         return model_spec in self.solvers
+
+    def swap_account(self, model_spec: str, account_id: int | None = None) -> bool:
+        """Move this agent to a different pool account (rotate, or a chosen one)."""
+        ctrl = self._control(model_spec)
+        ctrl.paused = False
+        ctrl.swap_prefer_id = account_id
+        ctrl.swap_exclude_current = account_id is None
+        ctrl.restart.set()
+        return model_spec in self.solvers
+
+    def swap_model(self, old_spec: str, new_spec: str) -> bool:
+        """Stop the old agent and start a fresh agent for a different model."""
+        if not new_spec or new_spec == old_spec:
+            return False
+        if old_spec in self.solvers:
+            self.stop_agent(old_spec)
+        if new_spec in self._tasks and not self._tasks[new_spec].done():
+            return True  # already running
+        if new_spec not in self.model_specs:
+            self.model_specs.append(new_spec)
+        self._tasks[new_spec] = asyncio.create_task(
+            self._run_solver(new_spec), name=f"solver-{new_spec}"
+        )
+        return True
 
     async def add_context_file(self, model_spec: str, filename: str, data: bytes) -> bool:
         """Copy a file into this agent's sandbox (/challenge/workspace) and tell it."""
@@ -373,14 +403,29 @@ class ChallengeSwarm:
             if ctrl.restart.is_set():
                 ctrl.restart.clear()
                 await solver.stop()
-                if lease is not None:
+                if lease is not None and pool_provider:
+                    cur = lease.account_id
                     await pool.release(lease)
-                    lease = await pool.lease(pool_provider) if pool_provider else None
+                    if ctrl.swap_prefer_id is not None:
+                        lease = await pool.lease(pool_provider, prefer_id=ctrl.swap_prefer_id)
+                    elif ctrl.swap_exclude_current:
+                        lease = await pool.lease(pool_provider, exclude_id=cur) \
+                            or await pool.lease(pool_provider)
+                    else:
+                        lease = await pool.lease(pool_provider)
+                elif lease is not None:
+                    await pool.release(lease)
+                    lease = None
+                ctrl.swap_prefer_id = None
+                ctrl.swap_exclude_current = False
                 solver = self._create_solver(model_spec, lease=lease)
                 solver.cancel_event = ctrl.cancel
                 self.solvers[model_spec] = solver
                 await solver.start()
-                logger.info(f"[{self.meta.name}/{model_spec}] Restarted by operator")
+                logger.info(
+                    f"[{self.meta.name}/{model_spec}] Restarted by operator"
+                    + (f" on account '{lease.label}'" if lease else "")
+                )
 
             result = await solver.run_until_done_or_gave_up()
 
@@ -513,16 +558,22 @@ class ChallengeSwarm:
             self.parked_until = _dt.datetime.now(_dt.UTC) + _dt.timedelta(seconds=30)
 
     async def run(self) -> SolverResult | None:
-        """Run all solvers in parallel. Returns the winner's result or None."""
-        tasks = [
-            asyncio.create_task(self._run_solver(spec), name=f"solver-{spec}")
-            for spec in self.model_specs
-        ]
+        """Run all solvers in parallel. Returns the winner's result or None.
+
+        Tasks live in self._tasks so operator swap-model can add new agents
+        mid-run and have them awaited here.
+        """
+        for spec in self.model_specs:
+            self._tasks[spec] = asyncio.create_task(
+                self._run_solver(spec), name=f"solver-{spec}"
+            )
 
         try:
-            while tasks:
-                done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-
+            while True:
+                pending = [t for t in self._tasks.values() if not t.done()]
+                if not pending:
+                    break
+                done, _ = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
                 for task in done:
                     try:
                         result = task.result()
@@ -530,12 +581,11 @@ class ChallengeSwarm:
                         continue
                     if result and result.status == FLAG_FOUND:
                         self._cancel_all()
-                        for p in pending:
-                            p.cancel()
-                        await asyncio.gather(*pending, return_exceptions=True)
+                        for t in self._tasks.values():
+                            if not t.done():
+                                t.cancel()
+                        await asyncio.gather(*self._tasks.values(), return_exceptions=True)
                         return result
-
-                tasks = list(pending)
 
             self._cancel_all()
             self._compute_parked_until()
@@ -543,9 +593,9 @@ class ChallengeSwarm:
         except Exception as e:
             logger.error(f"[{self.meta.name}] Swarm error: {e}", exc_info=True)
             self._cancel_all()
-            for t in tasks:
+            for t in self._tasks.values():
                 t.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+            await asyncio.gather(*self._tasks.values(), return_exceptions=True)
             return None
 
     def kill(self) -> None:

@@ -134,16 +134,22 @@ class AccountPool:
 
     # ── leasing ────────────────────────────────────────────────────────────
 
-    async def lease(self, provider: str) -> Lease | None:
+    async def lease(
+        self, provider: str, *, exclude_id: int | None = None, prefer_id: int | None = None
+    ) -> Lease | None:
         """Lease the best available account of *provider*, or None if none free.
 
         Selection spreads load: prefer the lowest in-use ratio, then the
-        least-recently-used account.
+        least-recently-used account. `exclude_id` skips an account (used when
+        swapping away from the current one); `prefer_id` forces a specific
+        account if it's available (operator-chosen swap target).
         """
         async with self._lock:
             now = _now()
             candidates = [
-                a for a in self._accounts.values() if a.provider == provider and a.available(now)
+                a
+                for a in self._accounts.values()
+                if a.provider == provider and a.available(now) and a.id != exclude_id
             ]
             if not candidates:
                 return None
@@ -153,7 +159,10 @@ class AccountPool:
                 lru = a.last_used_at or dt.datetime.min.replace(tzinfo=dt.UTC)
                 return (ratio, lru)
 
-            acct = min(candidates, key=_key)
+            if prefer_id is not None:
+                acct = next((a for a in candidates if a.id == prefer_id), None) or min(candidates, key=_key)
+            else:
+                acct = min(candidates, key=_key)
             acct.active_leases += 1
             acct.last_used_at = now
             asyncio.create_task(self._persist_last_used(acct.id, now))

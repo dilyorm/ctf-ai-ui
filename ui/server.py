@@ -1902,21 +1902,42 @@ async def api_account_connect_start(
             }
         )
 
-    result = (
-        await _spawn_claude_signin(config_dir)
-        if provider == "claude"
-        else await _spawn_codex_signin(config_dir)
-    )
+    # Claude (PTY setup-token, code paste) / Codex (device-auth) via the
+    # interactive connect manager, which holds the live CLI session.
+    from backend.connect_manager import get_connect_manager
+
+    mgr = get_connect_manager()
+    if provider == "claude":
+        result = await mgr.start_claude(acct.id, config_dir)
+    else:
+        result = await mgr.start_codex(acct.id, config_dir)
+
     if "error" in result:
-        # Roll back the half-created account so the pool isn't polluted.
         await db.delete(acct)
         await db.commit()
-        return JSONResponse(
-            {"ok": False, **result}, status_code=result.get("status_code", 400)
-        )
-    if result.get("status") == "authenticated":
-        await get_account_pool().reload()
+        return JSONResponse({"ok": False, **result}, status_code=result.get("status_code", 400))
     return JSONResponse({"ok": True, "account_id": acct.id, **result})
+
+
+@app.post("/api/accounts/{account_id}/code")
+async def api_account_submit_code(
+    account_id: int,
+    request: Request,
+    user: User = Depends(_require_db_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Submit a pasted Claude authorization code into the live setup-token session."""
+    acct = await db.get(PooledAccount, account_id)
+    if not acct:
+        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+    body = await request.json()
+    code = (body.get("code") or "").strip()
+    if not code:
+        return JSONResponse({"ok": False, "error": "no code"}, status_code=400)
+    from backend.connect_manager import get_connect_manager
+
+    ok = await get_connect_manager().submit_code(account_id, code)
+    return JSONResponse({"ok": ok})
 
 
 @app.post("/api/accounts/{account_id}/copilot/poll")
@@ -1986,6 +2007,9 @@ async def api_account_check(
     if not acct:
         return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
     if _account_authed(acct):
+        from backend.connect_manager import get_connect_manager
+
+        await get_connect_manager().finish(account_id)
         await get_account_pool().reload()
         return JSONResponse({"ok": True, "status": "authenticated"})
     return JSONResponse({"ok": True, "status": "pending"})

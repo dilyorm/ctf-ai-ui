@@ -1,0 +1,247 @@
+"""Interactive CLI sign-in manager for connecting pool accounts from the web.
+
+Claude Code and Codex have no clean non-interactive sign-in, so we drive their
+real CLIs and surface the OAuth step to the browser:
+
+- **Claude** (`claude setup-token`): runs a TUI that needs a PTY. We allocate a
+  pseudo-terminal, scrape the ``https://claude.com/.../oauth/authorize?code=true``
+  URL it prints, show it to the user, then write the authorization code they
+  paste back into the PTY's stdin. The CLI exchanges it and writes a long-lived
+  token into ``CLAUDE_CONFIG_DIR``.
+- **Codex** (`codex login --device-auth`): prints a device URL + one-time code
+  and polls the auth server itself, writing credentials into ``HOME/.codex`` on
+  success. We just surface the URL + code and keep the process alive.
+
+Sessions are held in-memory keyed by pool account id (the app is a single
+process). Completion is detected by the caller polling ``cli_auth`` for
+credentials on disk; ``finish()`` reaps the session.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import dataclasses
+import fcntl
+import logging
+import os
+import re
+import struct
+import termios
+import time
+
+logger = logging.getLogger(__name__)
+
+# Strip ANSI escape sequences (CSI + OSC) from TUI output.
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[()][AB0-2]")
+
+_CLAUDE_URL = re.compile(r"https://[a-zA-Z0-9.]*claude\.[a-z]+/\S*oauth\S*")
+_CODEX_URL = re.compile(r"https://\S*device\S*")
+_CODEX_CODE = re.compile(r"\b[A-Z0-9]{4}-[A-Z0-9]{4,6}\b")
+
+_SESSION_TTL = 900  # 15 min
+
+
+@dataclasses.dataclass
+class _Session:
+    provider: str
+    account_id: int
+    config_dir: str
+    proc: asyncio.subprocess.Process | None = None
+    master_fd: int | None = None  # claude PTY master
+    buffer: str = ""
+    url: str = ""
+    user_code: str = ""
+    created_at: float = dataclasses.field(default_factory=time.time)
+
+
+class ConnectManager:
+    def __init__(self) -> None:
+        self._sessions: dict[int, _Session] = {}
+
+    # ── public API ───────────────────────────────────────────────────────────
+
+    async def start_claude(self, account_id: int, config_dir: str) -> dict:
+        self._prune()
+        await self.finish(account_id)  # drop any prior attempt
+        os.makedirs(config_dir, exist_ok=True)
+
+        master, slave = os.openpty()
+        # Wide terminal so the TUI never line-wraps the OAuth URL.
+        with contextlib.suppress(Exception):
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 60, 400, 0, 0))
+
+        env = {
+            **os.environ,
+            "CLAUDE_CONFIG_DIR": config_dir,
+            "BROWSER": "/bin/false",  # force the URL to print instead of opening
+            "DISPLAY": "",
+            "NO_COLOR": "1",
+            "TERM": "xterm-256color",
+            "COLUMNS": "400",
+            "LINES": "60",
+            "CLAUDECODE": "",
+        }
+        claude_bin = _which("claude")
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                claude_bin, "setup-token",
+                stdin=slave, stdout=slave, stderr=slave,
+                env=env, start_new_session=True, close_fds=True,
+            )
+        except FileNotFoundError:
+            os.close(master)
+            os.close(slave)
+            return {"error": "Claude CLI not found on this server.",
+                    "hint": "npm install -g @anthropic-ai/claude-code", "status_code": 404}
+        os.close(slave)
+        os.set_blocking(master, False)
+
+        sess = _Session(provider="claude", account_id=account_id,
+                        config_dir=config_dir, proc=proc, master_fd=master)
+        self._sessions[account_id] = sess
+
+        loop = asyncio.get_running_loop()
+        loop.add_reader(master, self._on_pty_read, account_id)
+
+        url = await self._await_field(account_id, "url", timeout=25)
+        if not url:
+            await self.finish(account_id)
+            return {"error": "Could not read the Claude sign-in URL.",
+                    "hint": "Claude CLI may have changed; try again or sign in via SSH.",
+                    "status_code": 502}
+        return {"status": "pending", "auth_url": url, "needs_code": True}
+
+    async def start_codex(self, account_id: int, config_dir: str) -> dict:
+        self._prune()
+        await self.finish(account_id)
+        os.makedirs(config_dir, exist_ok=True)
+
+        env = {**os.environ, "HOME": config_dir, "NO_COLOR": "1", "CODEX_DISABLE_TELEMETRY": "1"}
+        env.pop("OPENAI_API_KEY", None)  # force subscription auth
+        codex_bin = _which("codex")
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                codex_bin, "login", "--device-auth",
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+                env=env, start_new_session=True,
+            )
+        except FileNotFoundError:
+            return {"error": "Codex CLI not found on this server.",
+                    "hint": "npm install -g @openai/codex", "status_code": 404}
+
+        sess = _Session(provider="codex", account_id=account_id, config_dir=config_dir, proc=proc)
+        self._sessions[account_id] = sess
+        asyncio.create_task(self._read_codex(account_id))
+
+        url = await self._await_field(account_id, "url", timeout=25)
+        if not url:
+            await self.finish(account_id)
+            return {"error": "Could not read the Codex device URL.", "status_code": 502}
+        return {"status": "device", "auth_url": url,
+                "user_code": self._sessions[account_id].user_code, "needs_code": False}
+
+    async def submit_code(self, account_id: int, code: str) -> bool:
+        """Write a pasted authorization code into the Claude PTY's stdin."""
+        sess = self._sessions.get(account_id)
+        if not sess or sess.master_fd is None:
+            return False
+        try:
+            os.write(sess.master_fd, (code.strip() + "\r").encode())
+            return True
+        except OSError:
+            return False
+
+    async def finish(self, account_id: int) -> None:
+        """Tear down a session (call after creds are detected, or to cancel)."""
+        sess = self._sessions.pop(account_id, None)
+        if not sess:
+            return
+        if sess.master_fd is not None:
+            with contextlib.suppress(Exception):
+                asyncio.get_running_loop().remove_reader(sess.master_fd)
+            with contextlib.suppress(OSError):
+                os.close(sess.master_fd)
+        if sess.proc and sess.proc.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                sess.proc.terminate()
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(sess.proc.wait(), timeout=3)
+            if sess.proc.returncode is None:
+                with contextlib.suppress(ProcessLookupError):
+                    sess.proc.kill()
+
+    # ── internals ──────────────────────────────────────────────────────────
+
+    def _on_pty_read(self, account_id: int) -> None:
+        sess = self._sessions.get(account_id)
+        if not sess or sess.master_fd is None:
+            return
+        try:
+            data = os.read(sess.master_fd, 4096)
+        except (OSError, BlockingIOError):
+            return
+        if not data:
+            return
+        sess.buffer += _ANSI.sub("", data.decode("utf-8", errors="replace"))
+        if not sess.url:
+            m = _CLAUDE_URL.search(sess.buffer.replace("\n", "").replace(" ", ""))
+            if m:
+                sess.url = m.group(0)
+
+    async def _read_codex(self, account_id: int) -> None:
+        sess = self._sessions.get(account_id)
+        if not sess or not sess.proc or not sess.proc.stdout:
+            return
+        try:
+            while True:
+                line = await sess.proc.stdout.readline()
+                if not line:
+                    break
+                text = _ANSI.sub("", line.decode("utf-8", errors="replace"))
+                sess.buffer += text
+                if not sess.url:
+                    m = _CODEX_URL.search(text) or _CODEX_URL.search(sess.buffer)
+                    if m:
+                        sess.url = m.group(0)
+                if not sess.user_code:
+                    m = _CODEX_CODE.search(text)
+                    if m:
+                        sess.user_code = m.group(0)
+        except Exception:
+            pass
+
+    async def _await_field(self, account_id: int, field: str, timeout: float) -> str:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            sess = self._sessions.get(account_id)
+            if not sess:
+                return ""
+            val = getattr(sess, field, "")
+            if val:
+                return val
+            await asyncio.sleep(0.2)
+        sess = self._sessions.get(account_id)
+        return getattr(sess, field, "") if sess else ""
+
+    def _prune(self) -> None:
+        now = time.time()
+        stale = [aid for aid, s in self._sessions.items() if now - s.created_at > _SESSION_TTL]
+        for aid in stale:
+            asyncio.create_task(self.finish(aid))
+
+
+def _which(binary: str) -> str:
+    import shutil
+    return shutil.which(binary) or binary
+
+
+_mgr: ConnectManager | None = None
+
+
+def get_connect_manager() -> ConnectManager:
+    global _mgr
+    if _mgr is None:
+        _mgr = ConnectManager()
+    return _mgr

@@ -92,6 +92,11 @@
         <div class="auth-url-box" id="modal-url-text"></div>
         <a id="modal-url-link" href="#" target="_blank" rel="noopener" class="btn btn-primary btn-sm">Open sign-in page</a>
       </div>
+      <div id="modal-codeinput" style="display:none; margin-top:14px; display:none">
+        <input id="modal-code-field" placeholder="Paste authorization code here"
+          style="width:100%; background:#1a1a1a; border:1px solid var(--border,#2a2a2a); color:#eee; border-radius:8px; padding:9px 11px; font-family:var(--mono,monospace)">
+        <button class="btn btn-primary btn-sm" style="margin-top:10px" onclick="submitCode()">Submit code</button>
+      </div>
       <p id="modal-status" class="hint" style="margin-top:14px"></p>
       <div style="margin-top:18px; display:flex; gap:8px; justify-content:flex-end">
         <button class="btn btn-ghost btn-sm" onclick="closeModal()">Close</button>
@@ -172,6 +177,8 @@
     function closeModal() {
       document.getElementById('signin-modal').style.display = 'none';
       document.getElementById('modal-code').style.display = 'none';
+      document.getElementById('modal-codeinput').style.display = 'none';
+      connectId = null;
       if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
       load();
     }
@@ -219,17 +226,37 @@
       }, intervalMs);
     }
 
+    let connectId = null;
+
+    async function submitCode() {
+      if (!connectId) return;
+      const code = document.getElementById('modal-code-field').value.trim();
+      if (!code) return;
+      const statusEl = document.getElementById('modal-status');
+      statusEl.textContent = 'Submitting code…';
+      const r = await fetch(`/api/accounts/${connectId}/code`, {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ code }),
+      });
+      const d = await r.json();
+      statusEl.textContent = d.ok ? 'Code submitted, finishing sign-in…' : 'Code rejected. Check and retry.';
+    }
+
     async function connect(provider) {
       const modal = document.getElementById('signin-modal');
       const title = document.getElementById('modal-title');
       const msg = document.getElementById('modal-msg');
       const urlBox = document.getElementById('modal-url');
+      const codeInput = document.getElementById('modal-codeinput');
+      const codeBox = document.getElementById('modal-code');
       const statusEl = document.getElementById('modal-status');
       title.textContent = `Connect ${provider} account`;
       msg.textContent = 'Starting sign-in…';
       urlBox.style.display = 'none';
-      document.getElementById('modal-code').style.display = 'none';
+      codeInput.style.display = 'none';
+      codeBox.style.display = 'none';
       statusEl.textContent = '';
+      connectId = null;
       modal.style.display = 'flex';
 
       const r = await fetch(`/api/accounts/${provider}/start`, {
@@ -241,23 +268,27 @@
         if (d.hint) statusEl.textContent = d.hint;
         return;
       }
-      if (d.status === 'authenticated') {
-        msg.textContent = 'Account connected and added to the pool.';
-        showAlert('Account connected.', true);
-        return;
-      }
-      if (d.auth_url) {
-        msg.textContent = 'Open this URL, sign in with the account you want to add, then come back — this updates automatically.';
+      connectId = d.account_id;
+
+      if (d.user_code) {
+        // Codex device flow: show URL + one-time code, self-completes.
+        msg.textContent = 'Open the link, sign in, and enter this code. Updates automatically.';
+        codeBox.style.display = 'block';
+        codeBox.querySelector('div').textContent = d.user_code;
+        document.getElementById('modal-code-link').textContent = 'Open ' + d.auth_url;
+        document.getElementById('modal-code-link').href = d.auth_url;
+      } else if (d.auth_url) {
+        msg.textContent = d.needs_code
+          ? 'Open this URL, authorize, copy the code Anthropic shows you, and paste it below.'
+          : 'Open this URL and sign in. Updates automatically.';
         urlBox.style.display = 'block';
         document.getElementById('modal-url-text').textContent = d.auth_url;
         document.getElementById('modal-url-link').href = d.auth_url;
-      } else {
-        msg.textContent = d.message || 'Follow the CLI sign-in steps on the server.';
+        if (d.needs_code) codeInput.style.display = 'block';
       }
       statusEl.textContent = 'Waiting for sign-in to complete…';
-      const id = d.account_id;
       pollTimer = setInterval(async () => {
-        const cr = await fetch(`/api/accounts/${id}/check`);
+        const cr = await fetch(`/api/accounts/${connectId}/check`);
         const cd = await cr.json();
         if (cd.status === 'authenticated') {
           clearInterval(pollTimer); pollTimer = null;

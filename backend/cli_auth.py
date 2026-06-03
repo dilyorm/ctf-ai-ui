@@ -39,6 +39,8 @@ def codex_is_authenticated(config_dir: str) -> bool:
     if not config_dir:
         return False
     candidates = [
+        # Current Codex CLI (>=0.1x) stores creds under HOME/.codex/auth.json.
+        os.path.join(config_dir, ".codex", "auth.json"),
         os.path.join(config_dir, ".config", "openai", "credentials.json"),
         os.path.join(config_dir, ".config", "openai", "auth.json"),
         os.path.join(config_dir, ".openai", "credentials.json"),

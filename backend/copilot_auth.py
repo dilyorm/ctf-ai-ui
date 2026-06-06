@@ -98,6 +98,10 @@ async def poll_device_flow(device_code: str, *, timeout: float = 10.0) -> dict:
         )
     body = resp.json()
     err = body.get("error")
+    logger.info(
+        "Copilot device poll: error=%s desc=%s interval=%s has_token=%s",
+        err, body.get("error_description"), body.get("interval"), bool(body.get("access_token")),
+    )
     if err == "authorization_pending":
         return {"status": "pending"}
     if err == "slow_down":

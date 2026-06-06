@@ -107,6 +107,7 @@
   <script>
     let pollTimer = null;
     let listTimer = null;
+    let copilotPolling = false;
 
     function showAlert(msg, ok) {
       const a = document.getElementById('alert');
@@ -179,7 +180,8 @@
       document.getElementById('modal-code').style.display = 'none';
       document.getElementById('modal-codeinput').style.display = 'none';
       connectId = null;
-      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+      copilotPolling = false;
+      if (pollTimer) { clearTimeout(pollTimer); clearInterval(pollTimer); pollTimer = null; }
       load();
     }
 
@@ -209,21 +211,34 @@
       statusEl.textContent = 'Waiting for GitHub authorization…';
 
       const id = d.account_id;
-      const intervalMs = Math.max(3, d.interval || 5) * 1000;
-      pollTimer = setInterval(async () => {
-        const cr = await fetch(`/api/accounts/${id}/copilot/poll`, { method: 'POST' });
-        const cd = await cr.json();
-        if (!cd.ok) { statusEl.textContent = cd.error || 'Error.'; clearInterval(pollTimer); pollTimer = null; return; }
+      let intervalMs = Math.max(5, d.interval || 5) * 1000;
+      copilotPolling = true;
+      const tick = async () => {
+        if (!copilotPolling) return;
+        let cd;
+        try {
+          const cr = await fetch(`/api/accounts/${id}/copilot/poll`, { method: 'POST' });
+          cd = await cr.json();
+        } catch { pollTimer = setTimeout(tick, intervalMs); return; }
+        if (!cd.ok) { statusEl.textContent = cd.error || 'Error.'; copilotPolling = false; return; }
         if (cd.status === 'connected') {
-          clearInterval(pollTimer); pollTimer = null;
+          copilotPolling = false;
           statusEl.textContent = 'Connected! Added to the pool.';
           showAlert('Copilot account connected.', true);
           load();
-        } else if (cd.status === 'expired' || cd.status === 'denied') {
-          clearInterval(pollTimer); pollTimer = null;
-          statusEl.textContent = `Sign-in ${cd.status}. Close and try again.`;
+          return;
         }
-      }, intervalMs);
+        if (cd.status === 'expired' || cd.status === 'denied') {
+          copilotPolling = false;
+          statusEl.textContent = `Sign-in ${cd.status}. Close and try again.`;
+          return;
+        }
+        if (cd.status === 'slow_down') {
+          intervalMs += 5000;  // GitHub requires backoff or it never returns the token
+        }
+        pollTimer = setTimeout(tick, intervalMs);
+      };
+      pollTimer = setTimeout(tick, intervalMs);
     }
 
     let connectId = null;

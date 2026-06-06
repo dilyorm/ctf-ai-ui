@@ -24,6 +24,7 @@ def make_platform_client(
     token: str = "",
     username: str = "admin",
     password: str = "admin",
+    api_base: str = "/api/v1",
 ) -> PlatformClient:
     """Return the appropriate client for *platform* (ctfd | rctf)."""
     p = (platform or "ctfd").lower().strip()
@@ -32,7 +33,13 @@ def make_platform_client(
     # default to CTFd — importing here avoids a circular-ish coupling.
     from backend.ctfd import CTFdClient
 
-    return CTFdClient(base_url=base_url, token=token, username=username, password=password)
+    return CTFdClient(
+        base_url=base_url,
+        token=token,
+        username=username,
+        password=password,
+        api_base=api_base or "/api/v1",
+    )
 
 
 __all__ = ["PlatformClient", "RCTFClient", "SUPPORTED_PLATFORMS", "make_platform_client"]

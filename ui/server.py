@@ -846,6 +846,9 @@ async def api_create_ctf(
     ctfd_url = (body.get("ctfd_url") or body.get("url") or "").strip()
     ctfd_token = (body.get("ctfd_token") or body.get("token") or "").strip()
     platform = (body.get("platform") or "ctfd").strip().lower()
+    api_base = (body.get("api_base") or "/api/v1").strip() or "/api/v1"
+    if not api_base.startswith("/"):
+        api_base = "/" + api_base
 
     if platform not in SUPPORTED_PLATFORMS:
         return JSONResponse(
@@ -878,6 +881,7 @@ async def api_create_ctf(
         platform=platform,
         ctfd_url=ctfd_url,
         ctfd_token_enc=token_enc,
+        api_base=api_base,
     )
     db.add(ctf)
     await db.commit()
@@ -1127,6 +1131,7 @@ async def api_run_start(
         if ctf_row:
             settings.platform = (ctf_row.platform or "ctfd").lower()
             settings.ctfd_url = ctf_row.ctfd_url
+            settings.ctfd_api_base = getattr(ctf_row, "api_base", "/api/v1") or "/api/v1"
             token = open_opt(ctf_row.ctfd_token_enc)
             if token:
                 settings.ctfd_token = token

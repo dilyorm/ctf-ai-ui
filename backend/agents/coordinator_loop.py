@@ -41,6 +41,7 @@ def build_deps(
         token=settings.ctfd_token,
         username=settings.ctfd_user,
         password=settings.ctfd_pass,
+        api_base=getattr(settings, "ctfd_api_base", "/api/v1") or "/api/v1",
     )
     cost_tracker = CostTracker()
     specs = model_specs or list(DEFAULT_MODELS)

@@ -27,6 +27,9 @@ class CTFdClient:
     token: str = ""
     username: str = "admin"
     password: str = "admin"
+    # API mount point. Standard CTFd is "/api/v1"; some instances remap it
+    # (e.g. SAS CTF serves the API at "/public-api").
+    api_base: str = "/api/v1"
 
     _client: httpx.AsyncClient | None = field(default=None, repr=False)
     _csrf_token: str = ""
@@ -95,7 +98,7 @@ class CTFdClient:
     async def _get(self, path: str) -> Any:
         await self._ensure_logged_in()
         client = await self._ensure_client()
-        resp = await client.get(f"/api/v1{path}", headers=self._base_headers())
+        resp = await client.get(f"{self.api_base}{path}", headers=self._base_headers())
         resp.raise_for_status()
         return resp.json()
 
@@ -106,7 +109,7 @@ class CTFdClient:
         if not self.token:
             headers["CSRF-Token"] = await self._get_csrf()
         resp = await client.post(
-            f"/api/v1{path}",
+            f"{self.api_base}{path}",
             json=body,
             headers=headers,
         )
@@ -115,7 +118,7 @@ class CTFdClient:
             self._csrf_token = ""
             headers["CSRF-Token"] = await self._get_csrf()
             resp = await client.post(
-                f"/api/v1{path}",
+                f"{self.api_base}{path}",
                 json=body,
                 headers=headers,
             )

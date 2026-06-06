@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     ctfd_user: str = "admin"
     ctfd_pass: str = "admin"
     ctfd_token: str = ""
+    # API mount point for CTFd (standard "/api/v1"; SAS CTF uses "/public-api")
+    ctfd_api_base: str = "/api/v1"
 
     # API Keys
     anthropic_api_key: str = ""

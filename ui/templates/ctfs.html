@@ -102,6 +102,11 @@
           <input type="password" id="new-ctf-token" placeholder="your access token" autocomplete="new-password" />
           <span class="field-hint" id="new-ctf-token-hint">CTFd: Settings → Access Tokens. rCTF: copy your login token from your profile.</span>
         </div>
+        <div class="form-group" id="new-ctf-apibase-group">
+          <label>API base path</label>
+          <input type="text" id="new-ctf-apibase" value="/api/v1" placeholder="/api/v1" />
+          <span class="field-hint">Standard CTFd is <code>/api/v1</code>. SAS CTF (ctf.thesascon.com) uses <code>/public-api</code>.</span>
+        </div>
         <div id="new-ctf-error" class="form-error" style="display:none"></div>
       </div>
       <div class="modal-footer">
@@ -133,6 +138,7 @@
     urlInput.value = "";
     tokenInput.value = "";
     platformInput.value = "ctfd";
+    document.getElementById("new-ctf-apibase").value = "/api/v1";
   }
 
   document.getElementById("btn-new-ctf")?.addEventListener("click", openModal);
@@ -164,6 +170,7 @@
           platform: platformInput.value || "ctfd",
           ctfd_url: url,
           ctfd_token: token,
+          api_base: (document.getElementById("new-ctf-apibase").value.trim() || "/api/v1"),
         }),
       });
       const data = await res.json();

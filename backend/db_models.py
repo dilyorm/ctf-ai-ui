@@ -193,6 +193,8 @@ class CTF(Base):
     platform: Mapped[str] = mapped_column(String(16), default="ctfd")
     ctfd_url: Mapped[str] = mapped_column(String(500))
     ctfd_token_enc: Mapped[bytes] = mapped_column(LargeBinary, default=b"")
+    # CTFd API mount point (standard "/api/v1"; SAS CTF uses "/public-api")
+    api_base: Mapped[str] = mapped_column(String(64), default="/api/v1")
 
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc)

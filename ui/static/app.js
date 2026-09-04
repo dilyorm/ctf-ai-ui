@@ -109,6 +109,7 @@ function handleEvent(evt) {
     case "log_line":          onLogLine(evt.data); break;
     case "cost_update":       onCostUpdate(evt.data); break;
     case "ctfd_status":       onCTFdStatus(evt.data); break;
+    case "agent_intervention": onIntervention(evt.data); break;
   }
 }
 
@@ -133,6 +134,11 @@ function applySnapshot(data) {
   if (state.selectedChallenge && state.challenges[state.selectedChallenge]) {
     renderChallengeDetail(state.challenges[state.selectedChallenge]);
   }
+  if (Array.isArray(data.interventions)) {
+    state.interventions = data.interventions;
+    renderInterventions();
+  }
+  if (state.view === "fleet") renderFleet();
 }
 
 // ── Challenge helpers ──────────────────────────────────────────────
@@ -562,6 +568,7 @@ async function runStart() {
         coordinator: "claude",
         max_concurrent_challenges: maxConcurrent,
         no_submit: noSubmit,
+        autopilot: state.autopilot !== false,
       }),
     });
     const data = await res.json();
@@ -771,6 +778,8 @@ function init() {
 
   setupDrawer("#sidebar-toggle", ".sidebar");
   setupDrawer("#right-panel-toggle", ".right-panel");
+  setupAutopilot();
+  setupFleetNav();
 
   const params = new URLSearchParams(location.search);
   const ctfParam = params.get("ctf_id");
@@ -794,6 +803,207 @@ function init() {
       } catch { /* ignore */ }
     }
   }, 10000);
+}
+
+// ── Provider colors / initials (fleet + interventions) ─────────────
+const PROV_COLOR = {
+  "claude-sdk": "#b4713a", claude: "#b4713a",
+  codex: "#10a37f", copilot: "#6e40c9", google: "#4285f4",
+  grok: "#111827", kimi: "#16a34a", antigravity: "#4285f4",
+  bedrock: "#ff9900", azure: "#0078d4", zen: "#8b5cf6",
+};
+function specProvider(spec) { return (spec || "").split("/")[0]; }
+function provColor(spec) { return PROV_COLOR[specProvider(spec)] || "var(--accent2)"; }
+function provAb(spec) {
+  const p = specProvider(spec);
+  const map = { "claude-sdk": "CL", claude: "CL", codex: "GX", copilot: "CP",
+    google: "GM", grok: "GK", kimi: "KM", antigravity: "AG", bedrock: "BR", azure: "AZ", zen: "ZN" };
+  return map[p] || p.slice(0, 2).toUpperCase();
+}
+
+// ── Intervention log ("who steered the agents") ────────────────────
+function initials(name) {
+  const s = (name || "?").trim();
+  const parts = s.split(/[\s@._-]+/).filter(Boolean);
+  return ((parts[0]?.[0] || "?") + (parts[1]?.[0] || "")).toUpperCase();
+}
+function actorColor(name) {
+  let h = 0; for (const c of (name || "")) h = (h * 31 + c.charCodeAt(0)) & 0xffff;
+  const hues = [265, 210, 168, 300, 24, 190]; return `oklch(0.62 0.15 ${hues[h % hues.length]})`;
+}
+function relTime(ts) {
+  const s = Math.max(0, Math.floor(Date.now() / 1000 - (ts || 0)));
+  if (s < 60) return s + "s"; if (s < 3600) return Math.floor(s / 60) + "m";
+  if (s < 86400) return Math.floor(s / 3600) + "h"; return Math.floor(s / 86400) + "d";
+}
+function onIntervention(d) {
+  state.interventions = state.interventions || [];
+  state.interventions.unshift(d);
+  if (state.interventions.length > 200) state.interventions.pop();
+  renderInterventions();
+}
+function renderInterventions() {
+  const el = $("intervention-list");
+  if (!el) return;
+  const items = state.interventions || [];
+  if (!items.length) {
+    el.innerHTML = '<div class="empty-state-sm">No interventions yet. Message an agent to steer it.</div>';
+    return;
+  }
+  el.innerHTML = "";
+  items.slice(0, 40).forEach(i => {
+    const actor = i.actor || "operator";
+    const target = i.model && i.model !== "coordinator"
+      ? `${i.challenge || ""}${i.challenge ? "/" : ""}${(i.model || "").split("/").slice(0, 2).join("/")}`
+      : (i.challenge ? i.challenge : "coordinator");
+    const isMsg = (i.action || "message") === "message";
+    const div = document.createElement("div");
+    div.className = "intv";
+    div.innerHTML =
+      `<span class="intv-av" style="background:${actorColor(actor)}">${escHtml(initials(actor))}</span>` +
+      `<div class="intv-body"><div class="intv-head">` +
+      `<span class="intv-actor">${escHtml(actor)}</span>` +
+      `<span class="intv-target">${escHtml(target)}</span>` +
+      `<span class="intv-time">${relTime(i.ts)}</span></div>` +
+      (isMsg && i.text
+        ? `<div class="intv-text">${escHtml(i.text)}</div>`
+        : `<div class="intv-action">${escHtml(i.action || "steered")}</div>`) +
+      `</div>`;
+    el.appendChild(div);
+  });
+}
+
+// ── Autopilot toggle ───────────────────────────────────────────────
+function setupAutopilot() {
+  const sw = $("autopilot-switch");
+  if (!sw) return;
+  let on = true;
+  try { on = localStorage.getItem("fr_autopilot") !== "0"; } catch { /* ignore */ }
+  state.autopilot = on;
+  const apply = () => {
+    sw.classList.toggle("on", state.autopilot);
+    sw.setAttribute("aria-checked", String(state.autopilot));
+  };
+  apply();
+  const toggle = () => {
+    state.autopilot = !state.autopilot;
+    try { localStorage.setItem("fr_autopilot", state.autopilot ? "1" : "0"); } catch { /* ignore */ }
+    apply();
+    toast(state.autopilot ? "Autopilot on — agents run autonomously." : "Autopilot off — start challenges manually.", "info");
+  };
+  sw.addEventListener("click", toggle);
+  sw.addEventListener("keydown", e => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); toggle(); } });
+}
+
+// ── Fleet view (coordinator → swarms → solvers) ────────────────────
+function setupFleetNav() {
+  const navFleet = $("nav-fleet");
+  const navCmd = $("nav-command");
+  const fleetView = $("fleet-view");
+  const detail = challengeDetail;
+  const welcome = welcomeScreen;
+  if (!navFleet || !fleetView) return;
+  state.view = "command";
+  navFleet.addEventListener("click", e => {
+    e.preventDefault();
+    state.view = "fleet";
+    navFleet.classList.add("active"); if (navCmd) navCmd.classList.remove("active");
+    if (welcome) welcome.style.display = "none";
+    if (detail) detail.style.display = "none";
+    fleetView.style.display = "flex";
+    fleetView.style.flexDirection = "column";
+    fleetView.style.flex = "1";
+    fleetView.style.minHeight = "0";
+    renderFleet();
+  });
+  if (navCmd) navCmd.addEventListener("click", e => {
+    // Let the real "/" navigation happen only if not already here; otherwise switch view.
+    if (state.view === "fleet") {
+      e.preventDefault();
+      state.view = "command";
+      navCmd.classList.add("active"); navFleet.classList.remove("active");
+      fleetView.style.display = "none";
+      if (state.selectedChallenge) { if (detail) detail.style.display = "flex"; }
+      else if (welcome) welcome.style.display = "flex";
+    }
+  });
+}
+function renderFleet() {
+  const tree = $("fleet-tree");
+  const countEl = $("fleet-count");
+  if (!tree) return;
+  const challenges = Object.values(state.challenges || {});
+  const active = challenges.filter(c => c.status === "running" || (c.models && Object.keys(c.models).length));
+  let solverCount = 0;
+  active.forEach(c => { solverCount += c.models ? Object.keys(c.models).length : 0; });
+  if (countEl) countEl.textContent = `${solverCount} solver${solverCount === 1 ? "" : "s"}`;
+
+  tree.innerHTML = "";
+  const rootRow = document.createElement("div");
+  rootRow.className = "tnode-row";
+  rootRow.innerHTML =
+    `<span class="twist open">▸</span><span class="tnode-ic" style="background:var(--accent)">CO</span>` +
+    `<span class="tnode-name">coordinator</span><span class="tnode-sub">${active.length} swarm${active.length === 1 ? "" : "s"}</span>`;
+  tree.appendChild(rootRow);
+
+  if (!active.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state-sm";
+    empty.style.padding = "14px 12px";
+    empty.textContent = "No live swarms. Start a run to populate the fleet.";
+    tree.appendChild(empty);
+    return;
+  }
+
+  const kidsWrap = document.createElement("div");
+  kidsWrap.className = "tkids";
+  active.forEach(c => {
+    const chWrap = document.createElement("div");
+    chWrap.className = "tnode";
+    const models = c.models ? Object.entries(c.models) : [];
+    const chRow = document.createElement("div");
+    chRow.className = "tnode-row";
+    chRow.innerHTML =
+      `<span class="twist open">▸</span>` +
+      `<span class="ch-status-dot ${c.status || "pending"}" style="margin:0 2px"></span>` +
+      `<span class="tnode-name">${escHtml(c.name || "?")}</span>` +
+      `<span class="tnode-sub">${escHtml(c.category || "")} · ${models.length} solver${models.length === 1 ? "" : "s"}</span>`;
+    chWrap.appendChild(chRow);
+    const mKids = document.createElement("div");
+    mKids.className = "tkids";
+    models.forEach(([spec, m]) => {
+      const st = (m && m.status) || "running";
+      const row = document.createElement("div");
+      row.className = "tnode-row";
+      row.style.cursor = "pointer";
+      row.innerHTML =
+        `<span class="twist"></span><span class="tnode-ic" style="background:${provColor(spec)}">${provAb(spec)}</span>` +
+        `<span class="tnode-name">${escHtml(spec)}</span>` +
+        `<span class="tnode-sub">${st === "won" ? "🏆 " : ""}${escHtml(st)} · ${m && m.steps || 0} steps · $${(m && m.cost || 0).toFixed(2)}</span>`;
+      row.addEventListener("click", () => {
+        // Jump to this challenge's detail (Command view) for full controls.
+        if (navCmdClick) navCmdClick();
+        selectChallenge(c.name);
+      });
+      mKids.appendChild(row);
+    });
+    chWrap.appendChild(mKids);
+    // collapse toggle
+    chRow.addEventListener("click", ev => {
+      if (ev.target.closest(".tnode-row") !== chRow) return;
+      mKids.classList.toggle("collapsed");
+      chRow.querySelector(".twist").classList.toggle("open");
+    });
+    kidsWrap.appendChild(chWrap);
+  });
+  tree.appendChild(kidsWrap);
+}
+function navCmdClick() {
+  const navCmd = $("nav-command"), navFleet = $("nav-fleet"), fleetView = $("fleet-view");
+  if (!navCmd) return;
+  state.view = "command";
+  navCmd.classList.add("active"); if (navFleet) navFleet.classList.remove("active");
+  if (fleetView) fleetView.style.display = "none";
 }
 
 document.addEventListener("DOMContentLoaded", init);

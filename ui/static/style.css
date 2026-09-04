@@ -1,40 +1,45 @@
 /* ─────────────────────────────────────────────────────────────────
-   CTF Agent  —  Control-room theme
-   Cool near-black canvas, amber signal color, mono numerics.
-   Tinted neutrals (OKLCH); one vivid signal carries live/active state.
+   Flagrunner  —  "Halden" theme
+   Cool graphite canvas tinted toward iris; one iris signal carries
+   live/active state; mint = solved. Soft depth, generous rounding,
+   no side-stripes, no stat-tile hero. Onest UI + JetBrains Mono data.
    ───────────────────────────────────────────────────────────────── */
+@import url('https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
 :root {
-  /* Canvas + surfaces: cool near-black, faint blue tint (never pure #000) */
-  --bg:          oklch(0.165 0.013 256);
-  --bg2:         oklch(0.205 0.015 256);
-  --bg3:         oklch(0.245 0.016 256);
-  --bg4:         oklch(0.290 0.017 256);
-  --border:      oklch(0.330 0.018 256);
-  --border2:     oklch(0.420 0.020 256);
-  --text:        oklch(0.955 0.006 256);
-  --text2:       oklch(0.730 0.012 256);
-  --text3:       oklch(0.560 0.013 256);
+  /* Canvas + surfaces: cool graphite, iris-biased tint (never pure #000) */
+  --bg:          oklch(0.166 0.012 265);
+  --bg2:         oklch(0.205 0.013 265);
+  --bg3:         oklch(0.246 0.015 265);
+  --bg4:         oklch(0.288 0.016 265);
+  --border:      oklch(0.320 0.016 265);
+  --border2:     oklch(0.415 0.019 265);
+  --text:        oklch(0.965 0.004 265);
+  --text2:       oklch(0.742 0.012 265);
+  --text3:       oklch(0.565 0.015 265);
 
-  /* Amber signal: active / live / focus. The one vivid color. */
-  --accent:      oklch(0.815 0.150 75);
-  --accent2:     oklch(0.700 0.140 70);
+  /* Iris signal: active / live / focus. The one vivid color. */
+  --accent:      oklch(0.660 0.170 278);
+  --accent2:     oklch(0.560 0.160 278);
+  --accent-soft: color-mix(in oklab, var(--accent) 14%, var(--bg2));
 
-  /* Status: solved=mint-teal (not hacker-green), fail=warm red, warn=amber */
-  --green:       oklch(0.800 0.140 168);
-  --green2:      oklch(0.640 0.120 168);
-  --red:         oklch(0.680 0.200 25);
-  --red2:        oklch(0.580 0.190 25);
-  --orange:      oklch(0.780 0.150 55);
-  --purple:      oklch(0.740 0.130 300);
-  --yellow:      oklch(0.860 0.140 95);
-  --cyan:        oklch(0.800 0.110 215);
+  /* Status: solved=mint, fail=soft red, warn=amber */
+  --green:       oklch(0.800 0.130 165);
+  --green2:      oklch(0.640 0.120 165);
+  --red:         oklch(0.685 0.170 15);
+  --red2:        oklch(0.585 0.165 15);
+  --orange:      oklch(0.795 0.135 70);
+  --purple:      oklch(0.720 0.150 300);
+  --yellow:      oklch(0.860 0.120 95);
+  --cyan:        oklch(0.800 0.105 215);
 
-  --mono: "SFMono-Regular", "JetBrains Mono", "Cascadia Code", ui-monospace, "Menlo", monospace;
-  --radius:      7px;
-  --radius-sm:   4px;
-  --shadow:      0 1px 2px oklch(0 0 0 / 0.5), 0 4px 16px oklch(0 0 0 / 0.28);
-  --nav-h:       48px;
+  --ui:   "Onest", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", "SFMono-Regular", "Cascadia Code", ui-monospace, "Menlo", monospace;
+  --radius:      12px;
+  --radius-sm:   8px;
+  --radius-lg:   16px;
+  --shadow:      0 1px 2px oklch(0.12 0.02 265 / 0.45), 0 12px 30px -16px oklch(0.06 0.02 265 / 0.8);
+  --nav-h:       52px;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -42,14 +47,18 @@ html, body { height: 100%; }
 
 body {
   background: var(--bg);
+  background-image: radial-gradient(1100px 560px at 86% -12%, oklch(0.4 0.12 278 / 0.10), transparent 60%);
+  background-attachment: fixed;
   color: var(--text);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-  font-size: 14px;
-  line-height: 1.6;
+  font-family: var(--ui);
+  font-size: 13.5px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
+h1, h2, h3, h4 { font-family: var(--ui); letter-spacing: -0.01em; }
 
 /* Scrollbar */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
@@ -153,8 +162,8 @@ body {
 .btn:hover { background: var(--bg4); border-color: var(--border2); }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
 .btn-sm  { padding: 3px 10px; font-size: 12px; }
-.btn-primary { background: var(--accent); border-color: var(--accent); color: oklch(0.17 0.012 256); font-weight: 650; }
-.btn-primary:hover { background: oklch(0.86 0.15 78); border-color: oklch(0.86 0.15 78); }
+.btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.btn-primary:hover { background: oklch(0.71 0.17 278); border-color: oklch(0.71 0.17 278); }
 .btn-secondary { background: var(--bg3); }
 .btn-ghost { background: transparent; border-color: transparent; }
 .btn-ghost:hover { background: var(--bg4); }
@@ -253,7 +262,10 @@ body {
 .quick-actions { display: flex; gap: 10px; }
 
 /* Challenge detail */
-.challenge-detail { display: flex; flex-direction: column; gap: 14px; }
+.challenge-detail { display: flex; flex-direction: column; gap: 14px; flex: 1; min-height: 0; }
+/* Last section (the log stream) grows to fill the panel — no dead space below. */
+.challenge-detail > .section:last-child { flex: 1; display: flex; flex-direction: column; min-height: 180px; }
+.challenge-detail > .section:last-child .log-container { flex: 1; height: auto; }
 .challenge-header { padding-bottom: 14px; border-bottom: 1px solid var(--border); }
 .challenge-title-row { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
 .challenge-title-row h2 { font-size: 18px; }
@@ -346,7 +358,7 @@ body {
   height: 320px; overflow-y: auto;
   font-family: var(--mono);
   font-size: 11.5px; line-height: 1.65; padding: 8px 12px;
-  background: oklch(0.13 0.012 256);
+  background: oklch(0.135 0.012 265);
 }
 .log-line { animation: logIn .18s ease both; }
 .log-line { display: flex; gap: 8px; padding: 1px 0; }
@@ -708,7 +720,7 @@ body {
 }
 .toast {
   background: var(--bg2); border: 1px solid var(--border);
-  border-left: 3px solid var(--accent);
+  border: 1px solid var(--border2);
   border-radius: var(--radius-sm);
   padding: 10px 14px;
   font-size: 13px; color: var(--text);
@@ -720,10 +732,10 @@ body {
   pointer-events: auto;
 }
 .toast.show { opacity: 1; transform: translateX(0); }
-.toast.success { border-left-color: var(--green); }
-.toast.error   { border-left-color: var(--red); }
-.toast.warn    { border-left-color: var(--orange); }
-.toast.info    { border-left-color: var(--accent); }
+.toast.success { border-color: color-mix(in oklab, var(--green) 45%, var(--border2)); }
+.toast.error   { border-color: color-mix(in oklab, var(--red) 45%, var(--border2)); }
+.toast.warn    { border-color: color-mix(in oklab, var(--orange) 45%, var(--border2)); }
+.toast.info    { border-color: color-mix(in oklab, var(--accent) 45%, var(--border2)); }
 .toast-icon { font-size: 14px; flex-shrink: 0; }
 .toast-msg  { flex: 1; word-break: break-word; }
 .toast-close {
@@ -944,3 +956,83 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   .dot, .ch-status-dot.running { animation: none; }
   * { transition-duration: .01ms !important; }
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+   Flagrunner additions — autopilot, interventions, fleet tree,
+   provider badges, connector wizard. Halden tokens throughout.
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* Autopilot toggle (run control + nav) */
+.ap-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 11px; margin-bottom: 12px;
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  border: 1px solid color-mix(in oklab, var(--accent) 30%, var(--border));
+}
+.ap-row .ap-title { font-weight: 600; font-size: 12.5px; color: var(--accent); }
+.ap-row .ap-sub   { font-size: 10.5px; color: var(--text3); margin-top: 1px; }
+.ap-switch {
+  width: 42px; height: 23px; border-radius: 999px; flex: none; margin-left: auto;
+  background: var(--bg3); border: 1px solid var(--border2); position: relative; cursor: pointer;
+  transition: background .2s;
+}
+.ap-switch::after {
+  content: ""; position: absolute; top: 2px; left: 2px; width: 17px; height: 17px;
+  border-radius: 50%; background: var(--text2); transition: transform .2s, background .2s;
+}
+.ap-switch.on { background: color-mix(in oklab, var(--accent) 50%, var(--bg3)); }
+.ap-switch.on::after { transform: translateX(19px); background: #fff; }
+
+/* Intervention log — "who steered which agent" */
+.intv-list { display: flex; flex-direction: column; gap: 2px; max-height: 220px; overflow: auto; }
+.intv { display: flex; gap: 9px; padding: 7px 2px; align-items: flex-start; }
+.intv + .intv { border-top: 1px solid var(--border); }
+.intv-av {
+  width: 24px; height: 24px; border-radius: 50%; flex: none; display: grid; place-items: center;
+  font-family: var(--mono); font-size: 9px; font-weight: 600; color: #fff; margin-top: 1px;
+}
+.intv-body { min-width: 0; flex: 1; }
+.intv-head { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+.intv-actor { font-weight: 600; font-size: 12px; }
+.intv-target { font-family: var(--mono); font-size: 10.5px; color: var(--accent); }
+.intv-time { font-family: var(--mono); font-size: 10px; color: var(--text3); margin-left: auto; }
+.intv-text { color: var(--text2); font-size: 11.5px; margin-top: 1px; word-break: break-word; }
+.intv-action { font-size: 10.5px; color: var(--text3); font-style: italic; }
+
+/* Fleet tree (main-panel mode) */
+.fleet-wrap { padding: 4px 2px; }
+.tnode { }
+.tnode-row {
+  display: flex; align-items: center; gap: 9px; padding: 8px 10px; border-radius: var(--radius-sm);
+  cursor: pointer; transition: background .12s;
+}
+.tnode-row:hover { background: var(--bg3); }
+.tnode-row.sel { background: var(--bg3); }
+.twist { width: 12px; color: var(--text3); transition: transform .15s; text-align: center; flex: none; font-size: 10px; }
+.twist.open { transform: rotate(90deg); }
+.tnode-ic {
+  width: 22px; height: 22px; border-radius: 6px; flex: none; display: grid; place-items: center;
+  font-family: var(--mono); font-size: 9.5px; font-weight: 600; color: #fff;
+}
+.tnode-name { font-size: 13px; font-weight: 500; }
+.tnode-sub { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--text3); }
+.tkids { margin-left: 15px; border-left: 1px solid var(--border); padding-left: 8px; }
+.tkids.collapsed { display: none; }
+
+/* Provider badges (accounts / model catalog) */
+.provider-grok        { background: #111; color: #fff; }
+.provider-kimi        { background: #16a34a; color: #fff; }
+.provider-antigravity { background: #4285f4; color: #fff; }
+.provider-copilot     { background: #6e40c9; color: #fff; }
+.provider-codex       { background: #10a37f; color: #fff; }
+
+/* Connector wizard chat */
+.cx-chat { display: flex; flex-direction: column; gap: 10px; max-height: 380px; overflow: auto; padding: 4px; }
+.cx-bub { max-width: 88%; padding: 9px 12px; border-radius: 12px; font-size: 12.5px; line-height: 1.5; }
+.cx-bub.ai { align-self: flex-start; background: var(--bg3); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
+.cx-bub.ai .cx-who { display: block; color: var(--accent); font-weight: 600; font-size: 11px; margin-bottom: 3px; font-family: var(--mono); }
+.cx-bub.me { align-self: flex-end; background: var(--accent-soft); border: 1px solid color-mix(in oklab, var(--accent) 30%, var(--border)); border-bottom-right-radius: 4px; }
+.cx-bub.sys { align-self: center; background: transparent; color: var(--text3); font-family: var(--mono); font-size: 11px; }
+.cx-field { display: flex; gap: 7px; margin-top: 6px; }
+.cx-field input { flex: 1; }

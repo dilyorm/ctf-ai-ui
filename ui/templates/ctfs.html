@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>CTFs · CTF Agent</title>
+  <title>CTFs · Flagrunner</title>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body class="page-body">
@@ -12,11 +12,11 @@
   <nav class="topnav">
     <button class="nav-toggle" id="nav-toggle" aria-label="Toggle menu" aria-expanded="false">☰</button>
     <div class="topnav-brand">
-      <span class="brand-icon">⚡</span>
-      <span class="brand-name">CTF Agent</span>
+      <span class="brand-icon">▲</span>
+      <span class="brand-name">Flagrunner</span>
     </div>
     <div class="topnav-links">
-      <a href="/" class="nav-link">Dashboard</a>
+      <a href="/" class="nav-link">Command</a>
       <a href="/ctfs" class="nav-link active">CTFs</a>
       <a href="/accounts" class="nav-link">Accounts</a>
       <a href="/team" class="nav-link">Team</a>
@@ -91,6 +91,7 @@
           <select id="new-ctf-platform">
             <option value="ctfd">CTFd</option>
             <option value="rctf">rCTF</option>
+            <option value="generic">Any platform (auto-detect &amp; connect)</option>
           </select>
         </div>
         <div class="form-group">
@@ -107,10 +108,23 @@
           <input type="text" id="new-ctf-apibase" value="/api/v1" placeholder="/api/v1" />
           <span class="field-hint">Standard CTFd is <code>/api/v1</code>. SAS CTF (ctf.thesascon.com) uses <code>/public-api</code>.</span>
         </div>
+        <div class="form-group" id="new-ctf-context-group" style="display:none">
+          <label>Notes for the connector agent</label>
+          <textarea id="new-ctf-context" rows="2" placeholder="e.g. we log in with a team token in an Authorization: Bearer header; flags look like HTB{...}"></textarea>
+          <span class="field-hint">Anything the agent should know. It probes the site and asks you for whatever it can't infer.</span>
+        </div>
+
+        <!-- Connector wizard output (generic platform) -->
+        <div id="connector-panel" style="display:none">
+          <div class="cx-chat" id="connector-chat"></div>
+          <div id="connector-questions"></div>
+        </div>
+
         <div id="new-ctf-error" class="form-error" style="display:none"></div>
       </div>
       <div class="modal-footer">
         <button class="btn btn-secondary" id="btn-cancel-new-ctf">Cancel</button>
+        <button class="btn" id="btn-probe-ctf" style="display:none">Probe &amp; connect</button>
         <button class="btn btn-primary" id="btn-save-new-ctf">Add CTF</button>
       </div>
     </div>
@@ -139,6 +153,7 @@
     tokenInput.value = "";
     platformInput.value = "ctfd";
     document.getElementById("new-ctf-apibase").value = "/api/v1";
+    platformInput.dispatchEvent(new Event("change"));
   }
 
   document.getElementById("btn-new-ctf")?.addEventListener("click", openModal);
@@ -194,15 +209,184 @@
     el.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); saveNewCtf(); } });
   });
 
-  // Platform-aware token hint
+  // Platform-aware token hint + generic-connector toggle
+  const apibaseGroup = document.getElementById("new-ctf-apibase-group");
+  const contextGroup = document.getElementById("new-ctf-context-group");
+  const connectorPanel = document.getElementById("connector-panel");
+  const btnProbe = document.getElementById("btn-probe-ctf");
+  const btnSave = document.getElementById("btn-save-new-ctf");
   platformInput.addEventListener("change", () => {
     const hint = document.getElementById("new-ctf-token-hint");
+    const generic = platformInput.value === "generic";
+    apibaseGroup.style.display = generic ? "none" : "block";
+    contextGroup.style.display = generic ? "block" : "none";
+    connectorPanel.style.display = "none";
+    connectorPanel.querySelector("#connector-chat").innerHTML = "";
+    document.getElementById("connector-questions").innerHTML = "";
+    btnProbe.style.display = generic ? "inline-flex" : "none";
+    btnSave.style.display = generic ? "none" : "inline-flex";
     if (platformInput.value === "rctf") {
       hint.textContent = "rCTF: copy the team login token from your profile page (Authorization: Bearer …).";
+    } else if (generic) {
+      hint.textContent = "Whatever token the platform uses. The agent will ask where it goes.";
     } else {
       hint.textContent = "CTFd: generate from Settings → Access Tokens.";
     }
   });
+
+  // ── Connector wizard (generic platform) ──────────────────────────
+  let probeDraft = null;
+  const chat = document.getElementById("connector-chat");
+  function bubble(kind, who, html) {
+    const b = document.createElement("div");
+    b.className = "cx-bub " + kind;
+    b.innerHTML = (kind === "ai" && who ? `<span class="cx-who">${who}</span>` : "") + html;
+    chat.appendChild(b);
+    chat.scrollTop = chat.scrollHeight;
+    return b;
+  }
+  function jparse(s, fallback) { try { return JSON.parse(s); } catch { return fallback; } }
+
+  function buildAdapter(draft, answers) {
+    const a = JSON.parse(JSON.stringify(draft || {}));
+    a.list = a.list || { method: "GET", path: "", items_path: "data" };
+    a.submit = a.submit || { method: "POST", path: "", body_template: { flag: "{flag}" }, success: {} };
+    a.auth = a.auth || { mode: "bearer", header: "Authorization", prefix: "Bearer " };
+    if (answers["list.path"]) a.list.path = answers["list.path"];
+    if (answers["auth.mode"]) {
+      const mode = answers["auth.mode"];
+      a.auth.mode = mode;
+      if (mode === "bearer") { a.auth.header = "Authorization"; a.auth.prefix = "Bearer "; }
+      else if (mode === "token_header") { a.auth.header = a.auth.header || "Authorization"; a.auth.prefix = a.auth.prefix || ""; }
+    }
+    if (answers["submit.path"]) a.submit.path = answers["submit.path"];
+    if (answers["submit.body"]) a.submit.body_template = jparse(answers["submit.body"], a.submit.body_template);
+    if (answers["submit.success"]) {
+      const raw = answers["submit.success"].trim();
+      // Accept "path == value" or JSON.
+      const m = raw.match(/^([\w.]+)\s*==\s*(.+)$/);
+      if (m) a.submit.success = { status_path: m[1], correct_values: [m[2].trim().replace(/^["']|["']$/g, "")] };
+      else { const j = jparse(raw, null); if (j) a.submit.success = j; }
+    }
+    return a;
+  }
+
+  async function runProbe() {
+    const url = urlInput.value.trim();
+    if (!url) { errBox.textContent = "Enter the site URL first."; errBox.style.display = "block"; return; }
+    errBox.style.display = "none";
+    connectorPanel.style.display = "block";
+    chat.innerHTML = "";
+    document.getElementById("connector-questions").innerHTML = "";
+    bubble("sys", null, "connector agent probing " + escapeHtml(url) + " …");
+    const release = window.setBusy(btnProbe, true, "Probing…");
+    let d;
+    try {
+      const res = await fetch("/api/platform/probe", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url, token: tokenInput.value.trim(), context: document.getElementById("new-ctf-context").value.trim() }),
+      });
+      d = await res.json();
+    } catch { bubble("ai", "Connector agent", "Network error reaching the site."); release(); return; }
+    release();
+    if (!d.ok) { bubble("ai", "Connector agent", escapeHtml(d.error || "Probe failed.")); return; }
+    probeDraft = d.adapter;
+    (d.log || []).forEach(l => bubble("sys", null, escapeHtml(l)));
+    if (d.kind === "ctfd" || d.kind === "rctf") {
+      bubble("ai", "Connector agent", `This is a standard <b>${d.kind}</b> platform (${Math.round((d.confidence||0)*100)}% sure). I can save it directly.`);
+      renderSaveButton({}, d.kind);
+      return;
+    }
+    if (d.kind === "generic") {
+      bubble("ai", "Connector agent", "This isn't stock CTFd or rCTF, but I found the challenge list. I need a few details to submit flags:");
+    } else {
+      bubble("ai", "Connector agent", "I couldn't auto-detect the API. Tell me where things live and I'll build the adapter:");
+    }
+    renderQuestions(d.questions || []);
+  }
+
+  function renderQuestions(questions) {
+    const qc = document.getElementById("connector-questions");
+    qc.innerHTML = "";
+    questions.forEach(q => {
+      const wrap = document.createElement("div");
+      wrap.className = "form-group";
+      wrap.style.marginTop = "10px";
+      const label = document.createElement("label");
+      label.textContent = q.prompt;
+      wrap.appendChild(label);
+      let input;
+      if (q.kind === "choice") {
+        input = document.createElement("select");
+        (q.options || []).forEach(o => { const opt = document.createElement("option"); opt.value = o; opt.textContent = o; input.appendChild(opt); });
+        if (q.suggestion) input.value = q.suggestion;
+      } else {
+        input = document.createElement("input");
+        input.type = "text";
+        input.placeholder = q.suggestion || "";
+      }
+      input.dataset.qid = q.id;
+      wrap.appendChild(input);
+      qc.appendChild(wrap);
+    });
+    renderSaveButton({ fromQuestions: true }, "generic");
+  }
+
+  function collectAnswers() {
+    const answers = {};
+    document.querySelectorAll("#connector-questions [data-qid]").forEach(el => {
+      if (el.value && el.value.trim()) answers[el.dataset.qid] = el.value.trim();
+    });
+    return answers;
+  }
+
+  function renderSaveButton(_opts, kind) {
+    const qc = document.getElementById("connector-questions");
+    const bar = document.createElement("div");
+    bar.style.cssText = "display:flex;gap:8px;justify-content:flex-end;margin-top:14px";
+    const validateBtn = document.createElement("button");
+    validateBtn.className = "btn btn-sm";
+    validateBtn.textContent = "Validate";
+    const saveBtn = document.createElement("button");
+    saveBtn.className = "btn btn-primary btn-sm";
+    saveBtn.textContent = "Save platform";
+
+    async function doValidate() {
+      const adapter = kind === "generic" ? buildAdapter(probeDraft, collectAnswers()) : probeDraft;
+      const rel = window.setBusy(validateBtn, true, "Validating…");
+      try {
+        const res = await fetch("/api/platform/validate", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url: urlInput.value.trim(), token: tokenInput.value.trim(), adapter }),
+        });
+        const d = await res.json();
+        bubble(d.ok ? "ai" : "ai", "Connector agent", (d.ok ? "✓ " : "✕ ") + escapeHtml(d.message || d.error || ""));
+      } catch { bubble("ai", "Connector agent", "Validation request failed."); }
+      finally { rel(); }
+    }
+    async function doSave() {
+      const name = nameInput.value.trim();
+      if (!name) { errBox.textContent = "Give the CTF a name."; errBox.style.display = "block"; return; }
+      const adapter = kind === "generic" ? buildAdapter(probeDraft, collectAnswers()) : probeDraft;
+      const rel = window.setBusy(saveBtn, true, "Saving…");
+      try {
+        const res = await fetch("/api/ctfs", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name, platform: kind === "generic" ? "generic" : kind, ctfd_url: urlInput.value.trim(),
+            ctfd_token: tokenInput.value.trim(), adapter: kind === "generic" ? adapter : undefined }),
+        });
+        const d = await res.json();
+        if (d.ok) { window.toast(`CTF "${name}" added`, "success"); setTimeout(() => location.reload(), 500); }
+        else { errBox.textContent = d.error || "Failed to save."; errBox.style.display = "block"; rel(); }
+      } catch { errBox.textContent = "Network error."; errBox.style.display = "block"; rel(); }
+    }
+    validateBtn.addEventListener("click", doValidate);
+    saveBtn.addEventListener("click", doSave);
+    bar.appendChild(validateBtn); bar.appendChild(saveBtn);
+    qc.appendChild(bar);
+  }
+
+  btnProbe.addEventListener("click", runProbe);
 
   // Delete CTF — uses the shared confirm modal + toasts
   document.querySelectorAll(".btn-delete-ctf").forEach(btn => {
@@ -271,6 +455,8 @@
     }
     .platform-ctfd { background: rgba(95,145,255,.15); color: #5f91ff; }
     .platform-rctf { background: rgba(255,170,64,.18); color: #ffaa40; }
+    .platform-generic { background: color-mix(in oklab, var(--accent) 18%, transparent); color: var(--accent); }
+    #connector-panel { border-top: 1px solid var(--border); margin-top: 8px; padding-top: 12px; }
   </style>
 </body>
 </html>

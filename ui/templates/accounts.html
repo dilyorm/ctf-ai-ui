@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Accounts · CTF Agent</title>
+  <title>Accounts · Flagrunner</title>
   <link rel="stylesheet" href="/static/style.css" />
   <style>
     .acct-actions { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:18px; }
@@ -32,13 +32,14 @@
 
   <nav class="topnav">
     <div class="topnav-brand">
-      <span class="brand-icon">⚡</span>
-      <span class="brand-name">CTF Agent</span>
+      <span class="brand-icon">▲</span>
+      <span class="brand-name">Flagrunner</span>
     </div>
     <div class="topnav-links">
-      <a href="/" class="nav-link">Dashboard</a>
+      <a href="/" class="nav-link">Command</a>
       <a href="/ctfs" class="nav-link">CTFs</a>
       <a href="/accounts" class="nav-link active">Accounts</a>
+      <a href="/team" class="nav-link">Team</a>
       <a href="/settings" class="nav-link">Settings</a>
     </div>
     <div class="topnav-user">
@@ -60,11 +61,19 @@
     <div id="alert" class="alert" style="display:none"></div>
 
     <div class="acct-actions">
-      <button class="btn btn-primary" onclick="connect('claude')">+ Connect Claude account</button>
-      <button class="btn btn-primary" onclick="connect('codex')">+ Connect Codex account</button>
-      <button class="btn btn-primary" onclick="connectCopilot()">+ Connect Copilot account</button>
+      <button class="btn btn-primary" onclick="connect('claude')">+ Claude</button>
+      <button class="btn btn-primary" onclick="connect('codex')">+ Codex</button>
+      <button class="btn btn-primary" onclick="connectCopilot()">+ Copilot</button>
+      <button class="btn" onclick="connectToken('grok')">+ Grok</button>
+      <button class="btn" onclick="connectToken('kimi')">+ Kimi</button>
+      <button class="btn" onclick="connectToken('antigravity')">+ Antigravity</button>
       <button class="btn btn-ghost btn-sm" onclick="load()">Refresh</button>
     </div>
+    <p class="page-desc" style="margin-top:-6px;font-size:12px;">
+      Claude / Codex / Copilot sign in with your subscription (no API key). Grok (xAI), Kimi (Moonshot),
+      and Antigravity (Gemini) connect with a subscription/API token — paste it and Flagrunner lists the
+      models it can reach. Add as many accounts per provider as you like.
+    </p>
 
     <table class="acct-table">
       <thead>
@@ -104,10 +113,109 @@
     </div>
   </div>
 
+  <!-- Token connect modal (Grok / Kimi / Antigravity) -->
+  <div id="token-modal" style="position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;z-index:50">
+    <div class="modal-card" style="background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:24px;width:min(520px,92vw)">
+      <h3 id="tk-title">Connect account</h3>
+      <p id="tk-help" class="hint" style="margin:6px 0 14px"></p>
+      <label class="hint" style="display:block;margin-bottom:5px">Label (optional)</label>
+      <input id="tk-label" placeholder="e.g. dilyor-grok"
+        style="width:100%;background:var(--bg3);border:1px solid var(--border2);color:var(--text);border-radius:8px;padding:9px 11px;margin-bottom:12px;font-family:var(--mono)">
+      <label class="hint" style="display:block;margin-bottom:5px">Subscription / API token</label>
+      <input id="tk-token" type="password" placeholder="paste token here"
+        style="width:100%;background:var(--bg3);border:1px solid var(--border2);color:var(--text);border-radius:8px;padding:9px 11px;font-family:var(--mono)">
+      <div style="display:flex;align-items:center;gap:10px;margin-top:12px">
+        <label class="hint" style="margin:0">Max concurrent</label>
+        <input id="tk-max" class="num-input" type="number" min="1" max="20" value="2">
+        <a id="tk-getlink" href="#" target="_blank" rel="noopener" class="hint" style="margin-left:auto;color:var(--accent)">Where do I get a token?</a>
+      </div>
+      <div id="tk-models" style="display:none;margin-top:14px">
+        <div class="hint" style="margin-bottom:6px">Reachable models (<span id="tk-models-n">0</span>):</div>
+        <div id="tk-models-list" style="max-height:120px;overflow:auto;background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-family:var(--mono);font-size:12px;line-height:1.7"></div>
+      </div>
+      <p id="tk-status" class="hint" style="margin-top:14px;min-height:18px"></p>
+      <div style="margin-top:16px;display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn btn-ghost btn-sm" onclick="closeTokenModal()">Cancel</button>
+        <button class="btn btn-sm" id="tk-verify" onclick="verifyToken()">Verify</button>
+        <button class="btn btn-primary btn-sm" id="tk-save" onclick="saveToken()" disabled>Connect</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     let pollTimer = null;
     let listTimer = null;
     let copilotPolling = false;
+
+    // ── Token providers (Grok / Kimi / Antigravity) ──────────────────
+    const TOKEN_HELP = {
+      grok: { help: "Paste an xAI API key (SuperGrok / console.x.ai → API keys).", url: "https://console.x.ai" },
+      kimi: { help: "Paste a Moonshot/Kimi key (platform.kimi.ai → API keys). Kimi Code subscription covers this.", url: "https://platform.kimi.ai/console/api-keys" },
+      antigravity: { help: "Paste a Google AI (Gemini) API key from aistudio.google.com.", url: "https://aistudio.google.com/app/apikey" },
+    };
+    let tkProvider = null, tkVerifiedModels = [];
+    function connectToken(provider) {
+      tkProvider = provider; tkVerifiedModels = [];
+      const h = TOKEN_HELP[provider] || { help: "", url: "#" };
+      document.getElementById('tk-title').textContent = 'Connect ' + provider + ' account';
+      document.getElementById('tk-help').textContent = h.help;
+      document.getElementById('tk-getlink').href = h.url;
+      document.getElementById('tk-label').value = '';
+      document.getElementById('tk-token').value = '';
+      document.getElementById('tk-max').value = '2';
+      document.getElementById('tk-status').textContent = '';
+      document.getElementById('tk-models').style.display = 'none';
+      document.getElementById('tk-save').disabled = true;
+      document.getElementById('token-modal').style.display = 'flex';
+    }
+    function closeTokenModal() {
+      document.getElementById('token-modal').style.display = 'none';
+      tkProvider = null;
+    }
+    async function verifyToken() {
+      const token = document.getElementById('tk-token').value.trim();
+      const st = document.getElementById('tk-status');
+      if (!token) { st.textContent = 'Paste a token first.'; return; }
+      st.textContent = 'Verifying…';
+      const btn = document.getElementById('tk-verify');
+      btn.disabled = true;
+      try {
+        const r = await fetch('/api/accounts/token/verify', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ provider: tkProvider, token }),
+        });
+        const d = await r.json();
+        if (!d.ok) { st.textContent = d.error || 'Token rejected.'; document.getElementById('tk-save').disabled = true; return; }
+        tkVerifiedModels = d.models || [];
+        const box = document.getElementById('tk-models');
+        document.getElementById('tk-models-n').textContent = tkVerifiedModels.length;
+        document.getElementById('tk-models-list').innerHTML =
+          tkVerifiedModels.length ? tkVerifiedModels.map(escapeHtml).join('<br>') : '<span style="color:var(--text3)">none listed</span>';
+        box.style.display = 'block';
+        st.textContent = 'Token valid. Click Connect to add it to the pool.';
+        document.getElementById('tk-save').disabled = false;
+      } catch { st.textContent = 'Network error verifying token.'; }
+      finally { btn.disabled = false; }
+    }
+    async function saveToken() {
+      const token = document.getElementById('tk-token').value.trim();
+      const label = document.getElementById('tk-label').value.trim();
+      const max = parseInt(document.getElementById('tk-max').value, 10) || 1;
+      const st = document.getElementById('tk-status');
+      st.textContent = 'Connecting…';
+      document.getElementById('tk-save').disabled = true;
+      try {
+        const r = await fetch('/api/accounts/' + tkProvider + '/token', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token, label, max_concurrent: max }),
+        });
+        const d = await r.json();
+        if (!d.ok) { st.textContent = d.error || 'Failed to connect.'; document.getElementById('tk-save').disabled = false; return; }
+        showAlert(tkProvider + ' account connected.', true);
+        closeTokenModal();
+        load();
+      } catch { st.textContent = 'Network error while connecting.'; document.getElementById('tk-save').disabled = false; }
+    }
 
     function showAlert(msg, ok) {
       const a = document.getElementById('alert');

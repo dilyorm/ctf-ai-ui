@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Dashboard · CTF Agent</title>
+  <title>Command · Flagrunner</title>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
@@ -12,11 +12,12 @@
   <nav class="topnav">
     <button class="nav-toggle" id="nav-toggle" aria-label="Toggle menu" aria-expanded="false">☰</button>
     <div class="topnav-brand">
-      <span class="brand-icon">⚡</span>
-      <span class="brand-name">CTF Agent</span>
+      <span class="brand-icon">▲</span>
+      <span class="brand-name">Flagrunner</span>
     </div>
     <div class="topnav-links">
-      <a href="/" class="nav-link active">Dashboard</a>
+      <a href="/" class="nav-link active" data-view="command" id="nav-command">Command</a>
+      <a href="#fleet" class="nav-link" data-view="fleet" id="nav-fleet">Fleet</a>
       <a href="/ctfs" class="nav-link">CTFs</a>
       <a href="/accounts" class="nav-link">Accounts</a>
       <a href="/team" class="nav-link">Team</a>
@@ -78,7 +79,7 @@
     <main class="main-panel" id="main-panel">
       <div class="welcome-screen" id="welcome-screen">
         <div class="welcome-icon">⚡</div>
-        <h1>CTF Agent Dashboard</h1>
+        <h1>Flagrunner</h1>
         <p>Select a challenge from the list, or start a run using the controls on the right.</p>
         <div class="quick-actions">
           <a href="/ctfs" class="btn btn-primary">Manage CTFs</a>
@@ -135,6 +136,23 @@
           <div class="log-container" id="log-container"></div>
         </div>
       </div>
+
+      <!-- Fleet view: coordinator → challenge swarms → solver agents -->
+      <div class="fleet-view" id="fleet-view" style="display:none">
+        <div class="challenge-header">
+          <div class="challenge-title-row">
+            <h2>Agent Fleet</h2>
+            <span class="status-badge running" id="fleet-count">0 solvers</span>
+          </div>
+          <div class="challenge-meta">
+            <span class="meta-tag">coordinator → swarms → solvers</span>
+          </div>
+        </div>
+        <div class="section" style="flex:1;min-height:0;display:flex;flex-direction:column;">
+          <h3 class="section-title">Live hierarchy</h3>
+          <div class="fleet-wrap" id="fleet-tree" style="overflow:auto;flex:1;"></div>
+        </div>
+      </div>
     </main>
 
     <!-- ── Right panel: run controls & cost ──────────────────────────── -->
@@ -143,6 +161,15 @@
       <!-- Run Control -->
       <div class="panel-section">
         <h3>Run Control</h3>
+
+        <!-- Autopilot -->
+        <div class="ap-row" id="autopilot-row" title="Coordinator auto-picks challenges, spawns solvers, rotates pooled subscriptions on limits, and auto-submits confirmed flags. Anyone can still steer an agent.">
+          <div>
+            <div class="ap-title">Autopilot</div>
+            <div class="ap-sub">auto-pick · rotate subs · auto-submit</div>
+          </div>
+          <span class="ap-switch on" id="autopilot-switch" role="switch" aria-checked="true" tabindex="0"></span>
+        </div>
 
         <!-- CTF selector -->
         <div class="form-group">
@@ -199,6 +226,14 @@
         </div>
         <div class="model-costs" id="model-costs">
           <div class="empty-state-sm">No usage yet</div>
+        </div>
+      </div>
+
+      <!-- Who steered the agents (human intervention log) -->
+      <div class="panel-section">
+        <h3>Who steered the agents</h3>
+        <div class="intv-list" id="intervention-list">
+          <div class="empty-state-sm">No interventions yet. Message an agent to steer it.</div>
         </div>
       </div>
 

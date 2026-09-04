@@ -189,12 +189,15 @@ class CTF(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
 
     name: Mapped[str] = mapped_column(String(200))
-    # "ctfd" | "rctf"
+    # "ctfd" | "rctf" | "generic"
     platform: Mapped[str] = mapped_column(String(16), default="ctfd")
     ctfd_url: Mapped[str] = mapped_column(String(500))
     ctfd_token_enc: Mapped[bytes] = mapped_column(LargeBinary, default=b"")
     # CTFd API mount point (standard "/api/v1"; SAS CTF uses "/public-api")
     api_base: Mapped[str] = mapped_column(String(64), default="/api/v1")
+    # Generic-platform adapter spec (JSON) — how to list/submit on an arbitrary
+    # platform. Empty for ctfd/rctf. Drafted by the connector probe.
+    adapter_json: Mapped[str] = mapped_column(Text, default="")
 
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: dt.datetime.now(dt.timezone.utc)

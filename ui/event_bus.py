@@ -48,6 +48,8 @@ class EventBus:
         self.total_cost: float = 0.0
         self.total_tokens: int = 0
         self.logs: dict[str, deque] = {}  # challenge_name -> log lines
+        # Human interventions: who messaged/steered which agent. Newest first.
+        self.interventions: deque[dict] = deque(maxlen=200)
 
     # ------------------------------------------------------------------ #
     #  Backend → bus                                                       #
@@ -103,6 +105,7 @@ class EventBus:
                 "total_tokens": self.total_tokens,
                 "ctfd_status": self.ctfd_status,
                 "logs": {k: list(v) for k, v in self.logs.items()},
+                "interventions": list(self.interventions),
             },
             "ts": time.time(),
         }
@@ -194,6 +197,19 @@ class EventBus:
 
             case "ctfd_status":
                 self.ctfd_status.update(d)
+
+            case "agent_intervention":
+                # Who steered which agent (operator message / pause / swap / ...).
+                self.interventions.appendleft(
+                    {
+                        "ts": evt.timestamp,
+                        "actor": d.get("actor", ""),
+                        "challenge": d.get("challenge", ""),
+                        "model": d.get("model", ""),
+                        "action": d.get("action", "message"),
+                        "text": d.get("text", ""),
+                    }
+                )
 
 
 # Module-level singleton

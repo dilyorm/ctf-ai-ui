@@ -130,6 +130,13 @@ def build_prompt(
             lines.append(f"- {h['content']}")
         lines.append("")
 
+    # Category playbook — concrete first moves for this challenge's category.
+    from backend.knowledge import tactics_for
+
+    playbook = tactics_for(meta.category, meta.tags)
+    if playbook:
+        lines.append(playbook)
+
     # pyghidra is always installed in the sandbox — show for RE/pwn/misc categories
     # or when distfiles contain binaries (non-text files)
     cat_lower = (meta.category or "").lower()

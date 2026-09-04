@@ -17,6 +17,14 @@ class Settings(BaseSettings):
     ctfd_token: str = ""
     # API mount point for CTFd (standard "/api/v1"; SAS CTF uses "/public-api")
     ctfd_api_base: str = "/api/v1"
+    # Generic-platform adapter spec (JSON string) — used when platform == "generic".
+    platform_adapter_json: str = ""
+
+    # Subscription/API tokens for OpenAI-compatible providers (leased from the
+    # shared pool at run time; may also be set directly for single-user runs).
+    grok_api_key: str = ""
+    kimi_api_key: str = ""
+    antigravity_api_key: str = ""
 
     # API Keys
     anthropic_api_key: str = ""

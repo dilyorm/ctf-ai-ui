@@ -21,6 +21,7 @@ from backend.ctfd import CTFdClient
 from backend.message_bus import ChallengeMessageBus
 from backend.models import DEFAULT_MODELS, provider_from_spec
 from backend.prompts import ChallengeMeta
+from backend.providers import PROVIDERS
 from backend.solver_base import (
     CANCELLED,
     ERROR,
@@ -50,6 +51,13 @@ QUOTA_FALLBACK: dict[str, str] = {
 
 def _quota_fallback_spec(model_spec: str) -> str | None:
     return QUOTA_FALLBACK.get(model_spec)
+
+
+# Which Settings field a leased token provider's credential is injected into.
+_TOKEN_SETTINGS_FIELD: dict[str, str] = {
+    "copilot": "github_copilot_oauth_token",
+    **{pid: p.token_field for pid, p in PROVIDERS.items() if p.token_field},
+}
 
 
 @dataclass
@@ -237,16 +245,19 @@ class ChallengeSwarm:
                 config_dir=config_dir,
             )
 
-        # Pydantic AI solver. For copilot, inject the leased token so the
-        # solver authenticates with this pool account (not per-user settings).
+        # Pydantic AI solver. For token providers (copilot/grok/kimi/antigravity)
+        # inject the leased token so the solver authenticates with this pool
+        # account (not per-user settings).
         settings_override = None
-        if provider == "copilot" and lease and lease.secret:
-            try:
-                settings_override = self.settings.model_copy(
-                    update={"github_copilot_oauth_token": lease.secret}
-                )
-            except Exception:
-                settings_override = self.settings
+        if lease and lease.secret:
+            token_field = _TOKEN_SETTINGS_FIELD.get(provider)
+            if token_field:
+                try:
+                    settings_override = self.settings.model_copy(
+                        update={token_field: lease.secret}
+                    )
+                except Exception:
+                    settings_override = self.settings
         return self._create_pydantic_solver(model_spec, settings=settings_override)
 
     def _make_notify_fn(self, model_spec: str):

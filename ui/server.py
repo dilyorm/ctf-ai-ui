@@ -850,6 +850,23 @@ async def api_create_ctf(
     if not api_base.startswith("/"):
         api_base = "/" + api_base
 
+    # Generic-platform adapter spec (from the connector wizard). Accept a dict or
+    # a JSON string; store as a compact JSON string.
+    adapter_json = ""
+    adapter_in = body.get("adapter")
+    if isinstance(adapter_in, dict):
+        adapter_json = _json.dumps(adapter_in)
+    elif isinstance(adapter_in, str) and adapter_in.strip():
+        try:
+            adapter_json = _json.dumps(_json.loads(adapter_in))
+        except _json.JSONDecodeError:
+            return JSONResponse({"ok": False, "error": "adapter is not valid JSON"}, status_code=400)
+    if platform == "generic" and not adapter_json:
+        return JSONResponse(
+            {"ok": False, "error": "a generic platform needs an adapter (run the connector probe first)"},
+            status_code=400,
+        )
+
     if platform not in SUPPORTED_PLATFORMS:
         return JSONResponse(
             {"ok": False, "error": f"platform must be one of {SUPPORTED_PLATFORMS}"},
@@ -882,6 +899,7 @@ async def api_create_ctf(
         ctfd_url=ctfd_url,
         ctfd_token_enc=token_enc,
         api_base=api_base,
+        adapter_json=adapter_json,
     )
     db.add(ctf)
     await db.commit()
@@ -913,6 +931,49 @@ async def api_delete_ctf(
     await db.delete(ctf)
     await db.commit()
     return JSONResponse({"ok": True})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Connect-any-platform: the connector agent probes a site and asks for what it
+# cannot infer, then validates the drafted adapter before it is saved.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@app.post("/api/platform/probe")
+async def api_platform_probe(request: Request, user: User = Depends(_require_db_user)):
+    """Probe a platform URL and return a draft adapter + any operator questions."""
+    from backend.platforms.probe import probe_platform
+
+    body = await request.json() if await request.body() else {}
+    url = (body.get("url") or "").strip()
+    if not url:
+        return JSONResponse({"ok": False, "error": "url is required"}, status_code=400)
+    token = (body.get("token") or "").strip()
+    context = (body.get("context") or "").strip()
+    hint = (body.get("platform_hint") or "auto").strip().lower()
+    try:
+        result = await probe_platform(url, token=token, context=context, platform_hint=hint)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": f"probe failed: {e}"}, status_code=502)
+    return JSONResponse({"ok": True, **result.to_dict()})
+
+
+@app.post("/api/platform/validate")
+async def api_platform_validate(request: Request, user: User = Depends(_require_db_user)):
+    """Validate a drafted adapter by listing challenges and rejecting a wrong flag."""
+    from backend.platforms.probe import validate_adapter
+
+    body = await request.json() if await request.body() else {}
+    url = (body.get("url") or "").strip()
+    token = (body.get("token") or "").strip()
+    adapter = body.get("adapter")
+    if not url or not isinstance(adapter, dict):
+        return JSONResponse({"ok": False, "error": "url and adapter are required"}, status_code=400)
+    try:
+        ok, message = await validate_adapter(url, token, adapter)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": f"validation failed: {e}"}, status_code=502)
+    return JSONResponse({"ok": ok, "message": message})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1015,12 +1076,33 @@ async def api_challenge_logs(name: str):
     return JSONResponse({"challenge": name, "logs": logs})
 
 
+@app.get("/api/interventions")
+async def api_interventions(challenge: str = "", model: str = "", limit: int = 50):
+    """Who steered which agent — the human-intervention log (newest first)."""
+    bus = get_bus()
+    items = list(bus.interventions)
+    if challenge:
+        items = [i for i in items if i.get("challenge") == challenge]
+    if model:
+        items = [i for i in items if i.get("model") == model]
+    return JSONResponse({"ok": True, "interventions": items[: max(1, min(limit, 200))]})
+
+
 @app.post("/api/message")
 async def api_message(request: Request):
     body = await request.json()
     message = body.get("message", "").strip()
     if not message:
         return JSONResponse({"error": "message is required"}, status_code=400)
+
+    sess_user = request.session.get("user") or {}
+    actor = sess_user.get("name") or sess_user.get("email") or "operator"
+    challenge = (body.get("challenge") or "").strip()
+    get_bus().emit_sync(
+        "agent_intervention",
+        {"actor": actor, "challenge": challenge, "model": "coordinator",
+         "action": "message", "text": message[:400]},
+    )
 
     from ui.coordinator_bridge import get_operator_inbox
 
@@ -1132,6 +1214,7 @@ async def api_run_start(
             settings.platform = (ctf_row.platform or "ctfd").lower()
             settings.ctfd_url = ctf_row.ctfd_url
             settings.ctfd_api_base = getattr(ctf_row, "api_base", "/api/v1") or "/api/v1"
+            settings.platform_adapter_json = getattr(ctf_row, "adapter_json", "") or ""
             token = open_opt(ctf_row.ctfd_token_enc)
             if token:
                 settings.ctfd_token = token
@@ -1785,6 +1868,19 @@ async def api_agent_action(
         if not new_spec:
             return JSONResponse({"ok": False, "error": "new_spec required"}, status_code=400)
         ok = swarm.swap_model(model_spec, new_spec)
+
+    if ok:
+        actor = getattr(user, "display_name", "") or getattr(user, "email", "") or "operator"
+        get_bus().emit_sync(
+            "agent_intervention",
+            {
+                "actor": actor,
+                "challenge": challenge,
+                "model": model_spec,
+                "action": action,
+                "text": (body.get("text") or body.get("new_spec") or "").strip()[:400],
+            },
+        )
     return JSONResponse({"ok": bool(ok), "action": action, "model_spec": model_spec})
 
 
@@ -1812,17 +1908,22 @@ async def api_agent_context(
 
 
 def _new_account_config_dir(provider: str) -> str:
-    if provider == "copilot":
-        # Token provider: no on-disk config dir. Use a synthetic unique value
-        # to satisfy the NOT NULL + UNIQUE constraint on config_dir.
-        return f"copilot:{uuid.uuid4().hex}"
+    from backend.providers import TOKEN_POOL_PROVIDERS
+
+    if provider in TOKEN_POOL_PROVIDERS:
+        # Token providers (copilot/grok/kimi/antigravity): no on-disk config dir.
+        # Use a synthetic unique value to satisfy the NOT NULL + UNIQUE
+        # constraint on config_dir.
+        return f"{provider}:{uuid.uuid4().hex}"
     root = CLAUDE_CONFIG_ROOT if provider == "claude" else CODEX_CONFIG_ROOT
     return os.path.join(root, f"acct-{uuid.uuid4().hex[:12]}")
 
 
 def _account_authed(acct: PooledAccount) -> bool:
     """True if a pool account has usable credentials (token present, or CLI creds on disk)."""
-    if acct.provider == "copilot":
+    from backend.providers import TOKEN_POOL_PROVIDERS
+
+    if acct.provider in TOKEN_POOL_PROVIDERS:
         return bool(acct.secret_enc)
     if acct.provider == "claude":
         return claude_is_authenticated(acct.config_dir)
@@ -1893,6 +1994,88 @@ async def _spawn_codex_signin(config_dir: str) -> dict:
     if codex_is_authenticated(config_dir):
         return {"status": "authenticated"}
     return {"status": "manual", "message": "Could not capture auth URL. Follow manual steps."}
+
+
+@app.post("/api/accounts/token/verify")
+async def api_account_token_verify(
+    request: Request, user: User = Depends(_require_db_user)
+):
+    """Check a pasted subscription/API token and list the models it can reach.
+
+    Used by the connect UI before saving a Grok / Kimi / Antigravity account so
+    the operator sees the real model IDs (which change often) rather than guesses.
+    """
+    body = await request.json() if await request.body() else {}
+    provider = (body.get("provider") or "").strip().lower()
+    token = (body.get("token") or "").strip()
+    from backend.providers import OPENAI_COMPAT_PROVIDERS
+    from backend.token_providers import verify_token_provider
+
+    if provider not in OPENAI_COMPAT_PROVIDERS:
+        return JSONResponse({"ok": False, "error": "unknown token provider"}, status_code=400)
+    result = await verify_token_provider(provider, token)
+    return JSONResponse(result)
+
+
+@app.post("/api/accounts/{provider}/token")
+async def api_account_connect_token(
+    provider: str,
+    request: Request,
+    user: User = Depends(_require_db_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Connect a NEW token-based subscription account (Grok / Kimi / Antigravity).
+
+    The operator pastes a subscription/API token; it is verified against the
+    provider's /models endpoint, stored encrypted, and added to the shared pool.
+    Any user may add any number of accounts.
+    """
+    from backend.providers import OPENAI_COMPAT_PROVIDERS
+    from backend.token_providers import verify_token_provider
+
+    provider = provider.lower().strip()
+    if provider not in OPENAI_COMPAT_PROVIDERS:
+        return JSONResponse({"ok": False, "error": "unknown token provider"}, status_code=400)
+
+    body = await request.json() if await request.body() else {}
+    token = (body.get("token") or "").strip()
+    if not token:
+        return JSONResponse({"ok": False, "error": "token is required"}, status_code=400)
+    label = (body.get("label") or "").strip()
+    try:
+        max_conc = max(1, min(int(body.get("max_concurrent") or 1), 20))
+    except (TypeError, ValueError):
+        max_conc = 1
+
+    # Verify unless the operator explicitly opts out (offline / rate-limited).
+    verified_models: list[str] = []
+    if body.get("skip_verify") is not True:
+        result = await verify_token_provider(provider, token)
+        if not result.get("ok"):
+            return JSONResponse(
+                {"ok": False, "error": result.get("error") or "token verification failed"},
+                status_code=400,
+            )
+        verified_models = result.get("models", [])
+
+    acct = PooledAccount(
+        provider=provider,
+        label=label or f"{provider}-{uuid.uuid4().hex[:6]}",
+        owner_user_id=user.id,
+        config_dir=_new_account_config_dir(provider),
+        secret_enc=seal_opt(token),
+        max_concurrent=max_conc,
+    )
+    db.add(acct)
+    await db.commit()
+    await db.refresh(acct)
+    try:
+        await get_account_pool().reload()
+    except Exception as e:
+        logger.warning("pool reload after token connect failed: %s", e)
+    return JSONResponse(
+        {"ok": True, "account_id": acct.id, "status": "authenticated", "models": verified_models}
+    )
 
 
 @app.get("/api/accounts")

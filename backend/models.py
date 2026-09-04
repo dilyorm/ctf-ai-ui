@@ -14,6 +14,13 @@ from pydantic_ai.providers.google import GoogleProvider
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.settings import ModelSettings
 
+from backend.providers import (
+    OPENAI_COMPAT_PROVIDERS,
+    catalog_entries,
+    openai_compat_config,
+)
+from backend.providers import vision_specs as _provider_vision_specs
+
 if TYPE_CHECKING:
     from backend.config import Settings
 
@@ -66,6 +73,12 @@ ALL_MODELS: list[dict] = [
     {"spec": "copilot/o4-mini",         "label": "o4-mini (Copilot)",        "provider": "copilot", "provider_label": "GitHub Copilot"},
 ]
 
+# ── Subscription/token providers (Grok, Kimi, Antigravity) ──────────────────
+# Contributed by the provider registry. These are OpenAI-compatible; the exact
+# model IDs a subscription exposes are best confirmed via the accounts page's
+# "Verify & list models" (GET /v1/models), since provider model IDs change often.
+ALL_MODELS.extend(catalog_entries())
+
 # Context window sizes (tokens)
 CONTEXT_WINDOWS: dict[str, int] = {
     "us.anthropic.claude-opus-4-7-v1": 1_000_000,
@@ -89,6 +102,8 @@ VISION_MODELS: set[str] = {
     "gpt-5.4-mini",
     "gemini-3-flash-preview",
 }
+# Vision-capable models contributed by token providers (grok/kimi/antigravity).
+VISION_MODELS |= _provider_vision_specs()
 
 
 def resolve_model(spec: str, settings: Settings) -> Model:
@@ -129,11 +144,12 @@ def resolve_model(spec: str, settings: Settings) -> Model:
                 ),
             )
         case "copilot":
+            from pydantic_ai.models.openai import OpenAIResponsesModel
+
             from backend.copilot_auth import (
                 COPILOT_API_BASE,
                 make_copilot_http_client,
             )
-            from pydantic_ai.models.openai import OpenAIResponsesModel
 
             oauth = getattr(settings, "github_copilot_oauth_token", "") or ""
             if not oauth:
@@ -159,6 +175,22 @@ def resolve_model(spec: str, settings: Settings) -> Model:
                 model_id,
                 provider=GoogleProvider(api_key=settings.gemini_api_key),
             )
+        case p if p in OPENAI_COMPAT_PROVIDERS:
+            # Grok (xAI), Kimi (Moonshot), Antigravity (Gemini) — OpenAI-compatible
+            # REST endpoints driven by a pooled subscription/API token.
+            cfg = openai_compat_config(p)
+            assert cfg is not None
+            base_url, token_field = cfg
+            api_key = getattr(settings, token_field, "") or ""
+            if not api_key:
+                raise ValueError(
+                    f"{p}/* requires a subscription/API token. "
+                    f"Connect a {p} account on the Accounts page."
+                )
+            return OpenAIModel(
+                model_id,
+                provider=OpenAIProvider(base_url=base_url, api_key=api_key),
+            )
         case "claude-sdk" | "codex":
             raise ValueError(
                 f"Provider '{provider}' uses its own solver backend, not Pydantic AI. "
@@ -179,7 +211,7 @@ def resolve_model_settings(spec: str) -> ModelSettings:
                 bedrock_cache_tool_definitions=True,
                 bedrock_cache_messages=True,
             )
-        case "azure" | "zen" | "copilot":
+        case "azure" | "zen" | "copilot" | "grok" | "kimi" | "antigravity":
             # OpenAI-compatible providers — server-side prompt caching is
             # automatic, no explicit config needed. Set max_tokens to avoid
             # reserving the full context window. Copilot Codex models go

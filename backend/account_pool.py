@@ -36,14 +36,18 @@ DEFAULT_COOLDOWN_SECONDS = 3600  # 1 hour (conservative)
 
 # Map a model-spec provider to a pool provider. Only subscription-backed
 # providers participate in the pool; API-key providers are unaffected.
+# grok/kimi/antigravity are OpenAI-compatible token providers (see backend.providers).
 _SPEC_PROVIDER_TO_POOL = {
     "claude-sdk": "claude",
     "codex": "codex",
     "copilot": "copilot",
+    "grok": "grok",
+    "kimi": "kimi",
+    "antigravity": "antigravity",
 }
 
 # Token-based pool providers store their credential in secret_enc (not a config dir).
-_TOKEN_PROVIDERS = {"copilot"}
+from backend.providers import TOKEN_POOL_PROVIDERS as _TOKEN_PROVIDERS  # noqa: E402
 
 
 def pool_provider_for_spec(spec_provider: str) -> str | None:

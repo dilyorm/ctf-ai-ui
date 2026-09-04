@@ -140,6 +140,10 @@ class GenericHTTPClient:
     base_url: str = ""
     token: str = ""
     adapter: dict[str, Any] = field(default_factory=dict)
+    # TLS verification. Defaults to on; the connector probe validates arbitrary
+    # user URLs with verification. Left as a field so a self-signed saved CTF
+    # can opt out explicitly (never disabled by default for user URLs).
+    verify: bool = True
     # accepted for duck-typing parity with CTFdClient; unused
     username: str = ""
     password: str = ""
@@ -153,7 +157,7 @@ class GenericHTTPClient:
             self._client = httpx.AsyncClient(
                 base_url=self.base_url.rstrip("/"),
                 follow_redirects=True,
-                verify=False,  # CTF services routinely use self-signed certs
+                verify=self.verify,
                 timeout=30.0,
                 headers={"User-Agent": USER_AGENT},
             )

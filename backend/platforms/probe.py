@@ -269,10 +269,13 @@ async def probe_platform(
     """Probe *base_url* and return a draft adapter plus any operator questions."""
     owns_client = client is None
     if client is None:
+        # Arbitrary user-supplied URL: keep TLS verification on and do NOT
+        # auto-follow redirects (a 3xx could bounce to an internal host). The
+        # caller is expected to have run backend.net_guard.assert_public_url first.
         client = httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
-            follow_redirects=True,
-            verify=False,
+            follow_redirects=False,
+            verify=True,
             timeout=20.0,
             headers={"User-Agent": "Mozilla/5.0 (Flagrunner connector)"},
         )

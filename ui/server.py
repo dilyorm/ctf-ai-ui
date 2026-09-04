@@ -948,6 +948,12 @@ async def api_platform_probe(request: Request, user: User = Depends(_require_db_
     url = (body.get("url") or "").strip()
     if not url:
         return JSONResponse({"ok": False, "error": "url is required"}, status_code=400)
+    from backend.net_guard import assert_public_url
+
+    try:
+        await assert_public_url(url)
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
     token = (body.get("token") or "").strip()
     context = (body.get("context") or "").strip()
     hint = (body.get("platform_hint") or "auto").strip().lower()
@@ -969,6 +975,12 @@ async def api_platform_validate(request: Request, user: User = Depends(_require_
     adapter = body.get("adapter")
     if not url or not isinstance(adapter, dict):
         return JSONResponse({"ok": False, "error": "url and adapter are required"}, status_code=400)
+    from backend.net_guard import assert_public_url
+
+    try:
+        await assert_public_url(url)
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
     try:
         ok, message = await validate_adapter(url, token, adapter)
     except Exception as e:

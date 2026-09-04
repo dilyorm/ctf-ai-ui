@@ -63,16 +63,18 @@
     <div class="acct-actions">
       <button class="btn btn-primary" onclick="connect('claude')">+ Claude</button>
       <button class="btn btn-primary" onclick="connect('codex')">+ Codex</button>
+      <button class="btn btn-primary" onclick="connect('grok')">+ Grok</button>
       <button class="btn btn-primary" onclick="connectCopilot()">+ Copilot</button>
-      <button class="btn" onclick="connectToken('grok')">+ Grok</button>
       <button class="btn" onclick="connectToken('kimi')">+ Kimi</button>
       <button class="btn" onclick="connectToken('antigravity')">+ Antigravity</button>
       <button class="btn btn-ghost btn-sm" onclick="load()">Refresh</button>
     </div>
     <p class="page-desc" style="margin-top:-6px;font-size:12px;">
-      Claude / Codex / Copilot sign in with your subscription (no API key). Grok (xAI), Kimi (Moonshot),
-      and Antigravity (Gemini) connect with a subscription/API token — paste it and Flagrunner lists the
-      models it can reach. Add as many accounts per provider as you like.
+      <b>Claude, Codex, Grok</b> sign in with your subscription via their CLI — click, open the link,
+      approve, done. Each account gets its own isolated config dir, so add as many as you like and the
+      pool rotates + switches between them. <b>Copilot</b> uses GitHub device login.
+      <b>Kimi</b> has no headless CLI login, and <b>Antigravity</b> stores creds in the OS keyring
+      (can't be pooled) — so both connect with a subscription token (Kimi Code key / Gemini key), verified live.
     </p>
 
     <table class="acct-table">

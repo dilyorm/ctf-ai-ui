@@ -83,6 +83,8 @@ class DockerSandbox:
     challenge_dir: str
     memory_limit: str = "16g"
     workspace_dir: str = ""
+    # Extra host:container[:mode] binds (e.g. a leased CLI creds dir for GrokSolver).
+    extra_binds: list[str] = field(default_factory=list)
     _container: Any = field(default=None, repr=False)
     _docker: Any = field(default=None, repr=False)
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -122,6 +124,9 @@ class DockerSandbox:
                 binds.append(f"{distfiles}:/challenge/distfiles:ro")
             if Path(meta_yml).exists():
                 binds.append(f"{meta_yml}:/challenge/metadata.yml:ro")
+            for b in self.extra_binds:
+                if b:
+                    binds.append(b)
 
             config = {
                 "Image": self.image,

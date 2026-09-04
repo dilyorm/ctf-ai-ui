@@ -45,6 +45,7 @@ from backend.auth import hash_password, verify_password
 from backend.cli_auth import (
     CLAUDE_CONFIG_ROOT,
     CODEX_CONFIG_ROOT,
+    GROK_CONFIG_ROOT,
     claude_is_authenticated,
     codex_is_authenticated,
 )
@@ -1927,7 +1928,7 @@ def _new_account_config_dir(provider: str) -> str:
         # Use a synthetic unique value to satisfy the NOT NULL + UNIQUE
         # constraint on config_dir.
         return f"{provider}:{uuid.uuid4().hex}"
-    root = CLAUDE_CONFIG_ROOT if provider == "claude" else CODEX_CONFIG_ROOT
+    root = {"claude": CLAUDE_CONFIG_ROOT, "codex": CODEX_CONFIG_ROOT, "grok": GROK_CONFIG_ROOT}.get(provider, CODEX_CONFIG_ROOT)
     return os.path.join(root, f"acct-{uuid.uuid4().hex[:12]}")
 
 
@@ -2149,7 +2150,7 @@ async def api_account_connect_start(
     Each connect creates its own isolated config dir + pool row, so any user can
     add as many accounts as they want.
     """
-    if provider not in ("claude", "codex", "copilot"):
+    if provider not in ("claude", "codex", "copilot", "grok"):
         return JSONResponse({"ok": False, "error": "unknown provider"}, status_code=400)
     body = await request.json() if await request.body() else {}
     label = (body.get("label") or "").strip()
@@ -2196,6 +2197,8 @@ async def api_account_connect_start(
     mgr = get_connect_manager()
     if provider == "claude":
         result = await mgr.start_claude(acct.id, config_dir)
+    elif provider == "grok":
+        result = await mgr.start_grok(acct.id, config_dir)
     else:
         result = await mgr.start_codex(acct.id, config_dir)
 
@@ -2340,7 +2343,9 @@ async def api_account_delete(
     await db.commit()
     # Only remove directories under our managed roots (defense against bad data).
     if config_dir and (
-        config_dir.startswith(CLAUDE_CONFIG_ROOT) or config_dir.startswith(CODEX_CONFIG_ROOT)
+        config_dir.startswith(CLAUDE_CONFIG_ROOT)
+        or config_dir.startswith(CODEX_CONFIG_ROOT)
+        or config_dir.startswith(GROK_CONFIG_ROOT)
     ):
         shutil.rmtree(config_dir, ignore_errors=True)
     await get_account_pool().reload()

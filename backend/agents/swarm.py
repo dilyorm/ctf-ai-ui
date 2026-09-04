@@ -209,7 +209,24 @@ class ChallengeSwarm:
         _notify = self._make_notify_fn(model_spec)
 
         # CLI providers consume the leased config dir; token providers don't.
-        config_dir = lease.config_dir if (lease and provider in ("claude-sdk", "codex")) else None
+        config_dir = lease.config_dir if (lease and provider in ("claude-sdk", "codex", "grok")) else None
+
+        if provider == "grok":
+            from backend.agents.grok_solver import GrokSolver
+            return GrokSolver(
+                model_spec=model_spec,
+                challenge_dir=self.challenge_dir,
+                meta=self.meta,
+                ctfd=self.ctfd,
+                cost_tracker=self.cost_tracker,
+                settings=self.settings,
+                cancel_event=self.cancel_event,
+                no_submit=self.no_submit,
+                submit_fn=_submit_fn,
+                message_bus=self.message_bus,
+                notify_coordinator=_notify,
+                config_dir=config_dir,
+            )
 
         if provider == "claude-sdk":
             from backend.agents.claude_solver import ClaudeSolver

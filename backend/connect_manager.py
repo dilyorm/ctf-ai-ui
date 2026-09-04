@@ -38,6 +38,9 @@ _ANSI = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[()][AB0-2]")
 _CLAUDE_URL = re.compile(r"https://[a-zA-Z0-9.]*claude\.[a-z]+/\S*oauth\S*")
 _CODEX_URL = re.compile(r"https://\S*device\S*")
 _CODEX_CODE = re.compile(r"\b[A-Z0-9]{4}-[A-Z0-9]{4,6}\b")
+# Grok device flow: prefer a URL that mentions device/auth/x.ai, else any https URL.
+_GROK_URL = re.compile(r"https://\S*(?:device|auth|x\.ai|grok)\S*", re.I)
+_ANY_URL = re.compile(r"https://\S+")
 
 _SESSION_TTL = 900  # 15 min
 
@@ -142,6 +145,43 @@ class ConnectManager:
         return {"status": "device", "auth_url": url,
                 "user_code": self._sessions[account_id].user_code, "needs_code": False}
 
+    async def start_grok(self, account_id: int, config_dir: str) -> dict:
+        """Sign in a Grok (xAI) subscription via `grok login --device-auth`.
+
+        Prints a URL + one-time code and polls xAI itself, writing credentials
+        into GROK_HOME (the isolated config_dir) on success — so multiple Grok
+        accounts stay separated and switchable, just like Codex.
+        """
+        self._prune()
+        await self.finish(account_id)
+        os.makedirs(config_dir, exist_ok=True)
+
+        env = {**os.environ, "GROK_HOME": config_dir, "NO_COLOR": "1", "BROWSER": "/bin/false", "DISPLAY": ""}
+        env.pop("XAI_API_KEY", None)  # force subscription auth
+        grok_bin = _which("grok")
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                grok_bin, "login", "--device-auth",
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+                env=env, start_new_session=True,
+            )
+        except FileNotFoundError:
+            return {"error": "Grok CLI not found on this server.",
+                    "hint": "Install: curl -fsSL https://x.ai/cli/install.sh | bash", "status_code": 404}
+
+        sess = _Session(provider="grok", account_id=account_id, config_dir=config_dir, proc=proc)
+        self._sessions[account_id] = sess
+        asyncio.create_task(self._read_device(account_id, _GROK_URL))
+
+        url = await self._await_field(account_id, "url", timeout=25)
+        if not url:
+            await self.finish(account_id)
+            return {"error": "Could not read the Grok device URL.",
+                    "hint": "Grok CLI may need updating, or sign in over SSH.", "status_code": 502}
+        return {"status": "device", "auth_url": url,
+                "user_code": self._sessions[account_id].user_code, "needs_code": False}
+
     async def submit_code(self, account_id: int, code: str) -> bool:
         """Write a pasted authorization code into the Claude PTY's stdin."""
         sess = self._sessions.get(account_id)
@@ -191,6 +231,10 @@ class ConnectManager:
                 sess.url = m.group(0)
 
     async def _read_codex(self, account_id: int) -> None:
+        await self._read_device(account_id, _CODEX_URL)
+
+    async def _read_device(self, account_id: int, url_re: re.Pattern) -> None:
+        """Stream a device-flow CLI's stdout, scraping the URL + one-time code."""
         sess = self._sessions.get(account_id)
         if not sess or not sess.proc or not sess.proc.stdout:
             return
@@ -202,7 +246,7 @@ class ConnectManager:
                 text = _ANSI.sub("", line.decode("utf-8", errors="replace"))
                 sess.buffer += text
                 if not sess.url:
-                    m = _CODEX_URL.search(text) or _CODEX_URL.search(sess.buffer)
+                    m = url_re.search(text) or url_re.search(sess.buffer) or _ANY_URL.search(sess.buffer)
                     if m:
                         sess.url = m.group(0)
                 if not sess.user_code:

@@ -60,11 +60,8 @@ PROVIDERS: dict[str, Provider] = {
         token_url="https://github.com/login/device",
     ),
     "grok": Provider(
-        id="grok", label="Grok (xAI)", connect_kind="token",
-        token_field="grok_api_key",
-        openai_base_url="https://api.x.ai/v1",
-        token_help="Paste an xAI API key (SuperGrok / xAI console → API keys).",
-        token_url="https://console.x.ai",
+        id="grok", label="Grok (xAI)", connect_kind="cli",
+        token_help="Sign in to your Grok/SuperGrok subscription via the xAI CLI (device login).",
         models=("grok-4.6", "grok-build-0.1", "grok-4.5", "grok-4.3"),
         vision_models=("grok-4.6", "grok-4.5"),
     ),

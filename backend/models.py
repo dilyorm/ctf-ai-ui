@@ -80,6 +80,13 @@ ALL_MODELS: list[dict] = [
 # "Verify & list models" (GET /v1/models), since provider model IDs change often.
 ALL_MODELS.extend(catalog_entries())
 
+# ── Grok subscription (xAI CLI — driven by GrokSolver, not an API key) ──────
+ALL_MODELS.extend([
+    {"spec": "grok/grok-4.6",        "label": "Grok 4.6",            "provider": "grok", "provider_label": "Grok Subscription (xAI CLI)"},
+    {"spec": "grok/grok-build-0.1",  "label": "Grok Build (coding)", "provider": "grok", "provider_label": "Grok Subscription (xAI CLI)"},
+    {"spec": "grok/grok-4.5",        "label": "Grok 4.5",            "provider": "grok", "provider_label": "Grok Subscription (xAI CLI)"},
+])
+
 # Context window sizes (tokens). Keyed by model id (aliases included).
 CONTEXT_WINDOWS: dict[str, int] = {
     "opus": 1_000_000, "sonnet": 1_000_000, "haiku": 400_000, "fable": 1_000_000,
@@ -95,6 +102,7 @@ VISION_MODELS: set[str] = {
     "opus", "sonnet", "haiku", "fable",
     "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra",
     "gemini-3-pro-preview", "gemini-3-flash-preview",
+    "grok-4.6", "grok-4.5",
 }
 # Vision-capable models contributed by token providers (grok/kimi/antigravity).
 VISION_MODELS |= _provider_vision_specs()
@@ -185,7 +193,7 @@ def resolve_model(spec: str, settings: Settings) -> Model:
                 model_id,
                 provider=OpenAIProvider(base_url=base_url, api_key=api_key),
             )
-        case "claude-sdk" | "codex":
+        case "claude-sdk" | "codex" | "grok":
             raise ValueError(
                 f"Provider '{provider}' uses its own solver backend, not Pydantic AI. "
                 f"resolve_model() should not be called for {spec}."

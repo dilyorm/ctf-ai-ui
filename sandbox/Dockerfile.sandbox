@@ -133,6 +133,11 @@ fi\n\
 exec python3 /opt/cado-nfs/cado-nfs.py "$@"\n' > /usr/local/bin/cado-nfs \
     && chmod +x /usr/local/bin/cado-nfs
 
+# ── Grok CLI (xAI) — GrokSolver runs it in-sandbox for subscription solving ──
+# Non-fatal: if it fails at build time, GrokSolver installs it on demand.
+RUN curl -fsSL https://x.ai/cli/install.sh | bash || echo "grok install deferred to runtime"
+ENV PATH="/root/.grok/bin:/root/.local/bin:$PATH"
+
 # ── Tools reference ──────────────────────────────────────────────────────────
 COPY sandbox/sandbox-tools.txt /tools.txt
 

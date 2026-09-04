@@ -16,6 +16,7 @@ import os
 # here so multiple subscriptions never share credentials.
 CLAUDE_CONFIG_ROOT = os.path.join(os.path.expanduser("~"), ".claude-ctf-agents")
 CODEX_CONFIG_ROOT = os.path.join(os.path.expanduser("~"), ".codex-ctf-agents")
+GROK_CONFIG_ROOT = os.path.join(os.path.expanduser("~"), ".grok-ctf-agents")
 
 
 def claude_is_authenticated(config_dir: str) -> bool:
@@ -66,9 +67,32 @@ def codex_is_authenticated(config_dir: str) -> bool:
     return False
 
 
+def grok_is_authenticated(config_dir: str) -> bool:
+    """True if Grok credentials exist in *config_dir* (used as GROK_HOME)."""
+    if not config_dir:
+        return False
+    for name in ("auth.json", "credentials.json", ".auth.json", "session.json"):
+        path = os.path.join(config_dir, name)
+        if os.path.exists(path):
+            try:
+                with open(path) as f:
+                    if json.load(f):
+                        return True
+            except Exception:
+                # a non-empty non-JSON creds file still counts
+                try:
+                    if os.path.getsize(path) > 2:
+                        return True
+                except OSError:
+                    pass
+    return False
+
+
 def is_authenticated(provider: str, config_dir: str) -> bool:
     if provider == "claude":
         return claude_is_authenticated(config_dir)
     if provider == "codex":
         return codex_is_authenticated(config_dir)
+    if provider == "grok":
+        return grok_is_authenticated(config_dir)
     return False

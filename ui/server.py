@@ -160,7 +160,7 @@ async def index(request: Request, db: AsyncSession = Depends(get_db)):
 
     return templates.TemplateResponse(
         request=request,
-        name="index.html",
+        name="app.html",
         context={
             "user": user,
             "github_login_enabled": bool(GITHUB_CLIENT_ID),

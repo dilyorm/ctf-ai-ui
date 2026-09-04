@@ -27,30 +27,31 @@ if TYPE_CHECKING:
 # Default model specs — single Opus 4.7 solver per challenge by default.
 # Users can opt into multi-model swarms via the Settings → Models page
 # (which writes UserModelPref rows that override DEFAULT_MODELS).
+# Family aliases (opus/sonnet/haiku) always resolve to the current model via the
+# Claude Code CLI, so we never hardcode a dated Claude id here.
 DEFAULT_MODELS: list[str] = [
-    "claude-sdk/claude-opus-4-7/max",
+    "claude-sdk/opus/high",
 ]
 
 # Full catalog of supported models for UI model-selection page.
 ALL_MODELS: list[dict] = [
-    # ── Claude subscription (Claude Code CLI auth) ─────────────────────────────
-    {"spec": "claude-sdk/claude-opus-4-7/low",    "label": "Claude Opus 4.7 · Low effort",    "provider": "claude", "provider_label": "Claude Subscription"},
-    {"spec": "claude-sdk/claude-opus-4-7/medium",  "label": "Claude Opus 4.7 · Medium effort", "provider": "claude", "provider_label": "Claude Subscription"},
-    {"spec": "claude-sdk/claude-opus-4-7/max",     "label": "Claude Opus 4.7 · Max effort",    "provider": "claude", "provider_label": "Claude Subscription"},
-    {"spec": "claude-sdk/claude-opus-4-6/low",    "label": "Claude Opus 4.6 · Low effort",    "provider": "claude", "provider_label": "Claude Subscription"},
-    {"spec": "claude-sdk/claude-opus-4-6/medium",  "label": "Claude Opus 4.6 · Medium effort", "provider": "claude", "provider_label": "Claude Subscription"},
-    {"spec": "claude-sdk/claude-opus-4-6/max",     "label": "Claude Opus 4.6 · Max effort",    "provider": "claude", "provider_label": "Claude Subscription"},
-    # ── Codex API (OPENAI_API_KEY) ─────────────────────────────────────────────
-    {"spec": "codex/gpt-5.4",       "label": "GPT-5.4",         "provider": "openai", "provider_label": "OpenAI / Codex (API key)"},
-    {"spec": "codex/gpt-5.4-mini",  "label": "GPT-5.4 Mini",    "provider": "openai", "provider_label": "OpenAI / Codex (API key)"},
-    {"spec": "codex/gpt-5.3-codex", "label": "GPT-5.3 Codex",   "provider": "openai", "provider_label": "OpenAI / Codex (API key)"},
-    # ── Codex subscription (ChatGPT account auth via `codex auth login`) ───────
-    {"spec": "codex/o3",            "label": "o3",               "provider": "codex-sub", "provider_label": "OpenAI / Codex (Subscription)"},
-    {"spec": "codex/o4-mini",       "label": "o4-mini",          "provider": "codex-sub", "provider_label": "OpenAI / Codex (Subscription)"},
-    {"spec": "codex/gpt-4.1",       "label": "GPT-4.1",          "provider": "codex-sub", "provider_label": "OpenAI / Codex (Subscription)"},
-    {"spec": "codex/gpt-4.1-mini",  "label": "GPT-4.1 Mini",     "provider": "codex-sub", "provider_label": "OpenAI / Codex (Subscription)"},
+    # ── Claude subscription (Claude Code CLI auth; family aliases stay current) ──
+    {"spec": "claude-sdk/opus/high",     "label": "Claude Opus · High effort",   "provider": "claude", "provider_label": "Claude Subscription"},
+    {"spec": "claude-sdk/opus/max",      "label": "Claude Opus · Max effort",    "provider": "claude", "provider_label": "Claude Subscription"},
+    {"spec": "claude-sdk/opus/medium",   "label": "Claude Opus · Medium effort", "provider": "claude", "provider_label": "Claude Subscription"},
+    {"spec": "claude-sdk/sonnet/high",   "label": "Claude Sonnet · High effort", "provider": "claude", "provider_label": "Claude Subscription"},
+    {"spec": "claude-sdk/sonnet/medium", "label": "Claude Sonnet · Medium",      "provider": "claude", "provider_label": "Claude Subscription"},
+    {"spec": "claude-sdk/haiku/medium",  "label": "Claude Haiku · fast",         "provider": "claude", "provider_label": "Claude Subscription"},
+    # ── Codex subscription (ChatGPT account via `codex login`) ──────────────────
+    # Codex has no always-current alias; these are the current recommended ids.
+    # Verify with "codex --model <id>" — the list drifts.
+    {"spec": "codex/gpt-6-astra",        "label": "GPT-6 Astra (most capable)",  "provider": "codex", "provider_label": "OpenAI / Codex (Subscription)"},
+    {"spec": "codex/gpt-5.6-sol",        "label": "GPT-5.6 Sol (deep coding)",   "provider": "codex", "provider_label": "OpenAI / Codex (Subscription)"},
+    {"spec": "codex/gpt-5.6-terra",      "label": "GPT-5.6 Terra (balanced)",    "provider": "codex", "provider_label": "OpenAI / Codex (Subscription)"},
+    {"spec": "codex/gpt-5.6-luna",       "label": "GPT-5.6 Luna (fast)",         "provider": "codex", "provider_label": "OpenAI / Codex (Subscription)"},
+    {"spec": "codex/gpt-5.3-codex-spark","label": "GPT-5.3 Codex Spark",         "provider": "codex", "provider_label": "OpenAI / Codex (Subscription)"},
     # ── Google ─────────────────────────────────────────────────────────────────
-    {"spec": "google/gemini-3-flash-preview", "label": "Gemini 3 Flash Preview", "provider": "google", "provider_label": "Google AI"},
+    {"spec": "google/gemini-3-pro-preview", "label": "Gemini 3 Pro", "provider": "google", "provider_label": "Google AI (key)"},
     # ── Bedrock ────────────────────────────────────────────────────────────────
     {"spec": "bedrock/us.anthropic.claude-opus-4-7-v1", "label": "Claude Opus 4.7 (Bedrock)", "provider": "bedrock", "provider_label": "AWS Bedrock"},
     {"spec": "bedrock/us.anthropic.claude-opus-4-6-v1", "label": "Claude Opus 4.6 (Bedrock)", "provider": "bedrock", "provider_label": "AWS Bedrock"},
@@ -79,28 +80,21 @@ ALL_MODELS: list[dict] = [
 # "Verify & list models" (GET /v1/models), since provider model IDs change often.
 ALL_MODELS.extend(catalog_entries())
 
-# Context window sizes (tokens)
+# Context window sizes (tokens). Keyed by model id (aliases included).
 CONTEXT_WINDOWS: dict[str, int] = {
-    "us.anthropic.claude-opus-4-7-v1": 1_000_000,
-    "claude-opus-4-7": 1_000_000,
-    "us.anthropic.claude-opus-4-6-v1": 1_000_000,
-    "claude-opus-4-6": 1_000_000,
-    "gpt-5.4": 1_000_000,
-    "gpt-5.4-mini": 400_000,
-    "gpt-5.3-codex": 1_000_000,
-    "gpt-5.3-codex-spark": 128_000,
-    "gemini-3-flash-preview": 1_000_000,
+    "opus": 1_000_000, "sonnet": 1_000_000, "haiku": 400_000, "fable": 1_000_000,
+    "gpt-6-astra": 1_000_000, "gpt-5.6-sol": 1_000_000, "gpt-5.6-terra": 1_000_000,
+    "gpt-5.6-luna": 400_000, "gpt-5.3-codex-spark": 128_000,
+    "gemini-3-pro-preview": 1_000_000, "gemini-3-flash-preview": 1_000_000,
+    "grok-4.6": 256_000, "grok-build-0.1": 256_000,
+    "kimi-k2-thinking-turbo": 256_000,
 }
 
-# Models that support vision
+# Models that support vision (keyed by model id / alias).
 VISION_MODELS: set[str] = {
-    "us.anthropic.claude-opus-4-7-v1",
-    "claude-opus-4-7",
-    "us.anthropic.claude-opus-4-6-v1",
-    "claude-opus-4-6",
-    "gpt-5.4",
-    "gpt-5.4-mini",
-    "gemini-3-flash-preview",
+    "opus", "sonnet", "haiku", "fable",
+    "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra",
+    "gemini-3-pro-preview", "gemini-3-flash-preview",
 }
 # Vision-capable models contributed by token providers (grok/kimi/antigravity).
 VISION_MODELS |= _provider_vision_specs()

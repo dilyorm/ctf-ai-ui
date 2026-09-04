@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Command · Flagrunner</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<style>
+/* ============ Flagrunner — "Halden" (cool graphite + iris) ============ */
+:root{
+  color-scheme: dark;
+  --bg:   oklch(0.166 0.012 265);
+  --bg2:  oklch(0.205 0.013 265);
+  --bg3:  oklch(0.246 0.015 265);
+  --bg4:  oklch(0.288 0.016 265);
+  --border:  oklch(0.320 0.016 265);
+  --border2: oklch(0.415 0.019 265);
+  --text:  oklch(0.965 0.004 265);
+  --text2: oklch(0.742 0.012 265);
+  --text3: oklch(0.565 0.015 265);
+  --accent:  oklch(0.660 0.170 278);   /* iris signal */
+  --accent2: oklch(0.560 0.160 278);
+  --green: oklch(0.800 0.130 165);
+  --red:   oklch(0.685 0.170 15);
+  --orange:oklch(0.795 0.135 70);
+  --purple:oklch(0.720 0.150 300);
+  --cyan:  oklch(0.800 0.105 215);
+  --blue:  oklch(0.720 0.130 250);
+  /* provider hues */
+  --claude:  oklch(0.780 0.140 55);
+  --codex:   oklch(0.800 0.130 165);
+  --copilot: oklch(0.720 0.150 285);
+  --gemini:  oklch(0.800 0.110 215);
+  --antigravity: oklch(0.760 0.120 250);
+  --grok:    oklch(0.720 0.015 265);
+  --kimi:    oklch(0.760 0.150 150);
+  --radius: 10px; --radius-sm: 7px; --radius-lg: 14px;
+  --mono: "JetBrains Mono","SFMono-Regular",ui-monospace,Menlo,monospace;
+  --sans: "Onest",-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+  --cond: "Onest",var(--sans);
+  --shadow: 0 1px 2px oklch(0.12 0.02 265 /.45), 0 12px 30px -16px oklch(0.06 0.02 265 /.8);
+  --rail-w: 66px; --topbar-h: 52px;
+}
+*{ box-sizing:border-box; }
+html,body{ height:100%; }
+body{
+  margin:0; background:var(--bg); color:var(--text);
+  font-family:var(--sans); font-size:13.5px; line-height:1.55; -webkit-font-smoothing:antialiased;
+  background-image:
+    radial-gradient(1100px 560px at 84% -10%, oklch(0.42 0.13 278 /.14), transparent 60%),
+    radial-gradient(900px 500px at -5% 108%, oklch(0.30 0.03 265 /.30), transparent 60%);
+  background-attachment:fixed;
+}
+.mono{ font-family:var(--mono); font-variant-numeric:tabular-nums; }
+h1,h2,h3,h4{ margin:0; font-family:var(--cond); letter-spacing:-.01em; text-wrap:balance; }
+a{ color:inherit; text-decoration:none; }
+button{ font-family:inherit; }
+::-webkit-scrollbar{ width:9px; height:9px; }
+::-webkit-scrollbar-thumb{ background:var(--bg4); border-radius:6px; }
+::-webkit-scrollbar-track{ background:transparent; }
+:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; border-radius:3px; }
+[hidden]{ display:none !important; }
+
+.app{ display:grid; grid-template-columns:var(--rail-w) 1fr; grid-template-rows:var(--topbar-h) 1fr;
+  grid-template-areas:"rail top" "rail main"; height:100vh; }
+.rail{ grid-area:rail; background:var(--bg2); border-right:1px solid var(--border);
+  display:flex; flex-direction:column; align-items:center; padding:10px 0; gap:4px; z-index:20; }
+.brand{ width:38px; height:38px; border-radius:11px; display:grid; place-items:center; margin-bottom:10px;
+  background:linear-gradient(150deg, var(--accent), var(--accent2)); color:#fff; font-weight:700;
+  font-family:var(--cond); font-size:20px; box-shadow:0 4px 14px -4px oklch(0.55 0.16 278 /.6); }
+.rail-btn{ width:46px; height:46px; border:none; background:transparent; color:var(--text3);
+  border-radius:var(--radius); display:grid; place-items:center; cursor:pointer; position:relative;
+  transition:background .15s, color .15s; }
+.rail-btn svg{ width:21px; height:21px; }
+.rail-btn:hover{ color:var(--text); background:var(--bg3); }
+.rail-btn.active{ color:var(--accent); background:var(--bg3); }
+.rail-btn.active::before{ content:""; position:absolute; left:-10px; top:9px; bottom:9px; width:3px;
+  background:var(--accent); border-radius:0 3px 3px 0; }
+.rail-btn .tip{ position:absolute; left:56px; top:50%; transform:translateY(-50%) scale(.96);
+  background:var(--bg4); border:1px solid var(--border2); color:var(--text); padding:5px 9px;
+  border-radius:6px; font-size:12px; white-space:nowrap; opacity:0; pointer-events:none;
+  transition:opacity .12s, transform .12s; box-shadow:var(--shadow); z-index:40; }
+.rail-btn:hover .tip{ opacity:1; transform:translateY(-50%) scale(1); }
+.rail-sp{ flex:1; }
+
+.top{ grid-area:top; background:var(--bg2); border-bottom:1px solid var(--border);
+  display:flex; align-items:center; gap:14px; padding:0 18px; z-index:15; }
+.top .screen-name{ font-family:var(--cond); font-weight:700; font-size:17px; }
+.top .crumb{ color:var(--text3); font-size:12px; }
+.top-sp{ flex:1; }
+.pill{ display:inline-flex; align-items:center; gap:7px; padding:5px 10px; border-radius:99px;
+  background:var(--bg3); border:1px solid var(--border); font-size:12px; }
+.pill.link{ cursor:pointer; } .pill.link:hover{ border-color:var(--border2); }
+.dot{ width:8px; height:8px; border-radius:50%; background:var(--text3); flex:none; }
+.dot.live{ background:var(--green); animation:pulse 2s infinite; }
+.dot.amber{ background:var(--accent); }
+.dot.red{ background:var(--red); }
+@keyframes pulse{ 0%{box-shadow:0 0 0 0 oklch(0.8 0.13 165 /.5)} 70%{box-shadow:0 0 0 7px oklch(0.8 0.13 165 /0)} 100%{box-shadow:0 0 0 0 transparent} }
+@media (prefers-reduced-motion: reduce){ *{ animation:none !important; transition:none !important; } }
+
+.ap{ display:inline-flex; align-items:center; gap:10px; padding:5px 8px 5px 12px; border-radius:99px;
+  background:color-mix(in oklab, var(--accent) 14%, var(--bg3)); border:1px solid color-mix(in oklab,var(--accent) 35%, var(--border)); }
+.ap .lab{ font-family:var(--cond); font-weight:700; letter-spacing:.04em; font-size:12px; color:var(--accent); text-transform:uppercase; }
+.switch{ width:40px; height:22px; border-radius:99px; background:var(--bg4); position:relative; cursor:pointer;
+  border:1px solid var(--border2); transition:background .2s; flex:none; }
+.switch::after{ content:""; position:absolute; top:2px; left:2px; width:16px; height:16px; border-radius:50%;
+  background:var(--text2); transition:transform .2s, background .2s; }
+.switch.on{ background:color-mix(in oklab, var(--accent) 55%, var(--bg4)); }
+.switch.on::after{ transform:translateX(18px); background:#fff; }
+.avatar{ width:30px; height:30px; border-radius:50%; display:grid; place-items:center; font-size:11px;
+  font-weight:600; color:#fff; flex:none; font-family:var(--mono); cursor:pointer; }
+
+.main{ grid-area:main; overflow:auto; padding:18px 20px 40px; }
+.screen{ display:none; animation:fade .25s ease; }
+.screen.active{ display:block; }
+@keyframes fade{ from{opacity:0; transform:translateY(4px)} to{opacity:1; transform:none} }
+
+.grid{ display:grid; gap:14px; }
+.panel{ background:var(--bg2); border:1px solid var(--border); border-radius:var(--radius-lg); }
+.panel-h{ display:flex; align-items:center; gap:10px; padding:12px 15px; border-bottom:1px solid var(--border); }
+.panel-h h3{ font-size:14px; font-weight:600; }
+.panel-b{ padding:14px 15px; }
+.label{ font-size:10.5px; text-transform:uppercase; letter-spacing:.12em; color:var(--text3); font-weight:600; }
+.tag{ font-family:var(--mono); font-size:11px; padding:2px 8px; border-radius:99px; background:var(--bg3);
+  border:1px solid var(--border); color:var(--text2); }
+.tag.amber{ color:var(--accent); border-color:color-mix(in oklab,var(--accent) 40%,var(--border)); background:color-mix(in oklab,var(--accent) 12%,var(--bg3)); }
+.tag.green{ color:var(--green); border-color:color-mix(in oklab,var(--green) 40%,var(--border)); background:color-mix(in oklab,var(--green) 12%,var(--bg3)); }
+.tag.red{ color:var(--red); border-color:color-mix(in oklab,var(--red) 40%,var(--border)); background:color-mix(in oklab,var(--red) 12%,var(--bg3)); }
+.tag.purple{ color:var(--purple); border-color:color-mix(in oklab,var(--purple) 40%,var(--border)); background:color-mix(in oklab,var(--purple) 12%,var(--bg3)); }
+.btn{ display:inline-flex; align-items:center; gap:6px; padding:7px 12px; border-radius:var(--radius-sm);
+  background:var(--bg3); border:1px solid var(--border); color:var(--text); font-size:12.5px; cursor:pointer;
+  transition:background .15s, border-color .15s; }
+.btn:hover{ background:var(--bg4); border-color:var(--border2); }
+.btn:disabled{ opacity:.5; cursor:not-allowed; }
+.btn.primary{ background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
+.btn.primary:hover{ background:oklch(0.71 0.17 278); }
+.btn.ghost{ background:transparent; }
+.btn.sm{ padding:4px 8px; font-size:11.5px; }
+.btn.danger{ color:var(--red); border-color:color-mix(in oklab,var(--red) 35%,var(--border)); background:color-mix(in oklab,var(--red) 10%,var(--bg3)); }
+.empty{ color:var(--text3); font-size:12px; padding:20px 15px; text-align:center; }
+select, input, textarea{ font-family:inherit; }
+
+/* run bar */
+.runbar{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:14px;
+  background:var(--bg2); border:1px solid var(--border); border-radius:var(--radius-lg); padding:11px 14px; }
+.runbar select{ background:var(--bg); border:1px solid var(--border2); color:var(--text); border-radius:var(--radius-sm); padding:7px 10px; font-size:12.5px; }
+.runbar .sp{ flex:1; }
+.runbar label.inl{ display:flex; align-items:center; gap:6px; font-size:12px; color:var(--text2); }
+
+.kpis{ grid-template-columns:repeat(4,1fr); }
+.kpi{ padding:14px 16px; }
+.kpi .n{ font-family:var(--mono); font-size:30px; font-weight:600; line-height:1; }
+.kpi .n small{ font-size:15px; color:var(--text3); }
+.kpi .k{ margin-top:8px; }
+.kpi .sub{ margin-top:6px; font-size:11.5px; color:var(--text2); font-family:var(--mono); }
+.spark{ height:26px; margin-top:10px; width:100%; display:block; }
+.cmd-cols{ grid-template-columns: 1.55fr 1fr; align-items:start; }
+@media (max-width:1080px){ .cmd-cols{ grid-template-columns:1fr; } .kpis{ grid-template-columns:repeat(2,1fr); } }
+
+.chal{ display:grid; grid-template-columns: 12px 1fr auto; gap:12px; align-items:center; padding:11px 14px;
+  border-bottom:1px solid var(--border); cursor:pointer; transition:background .12s; }
+.chal:hover{ background:var(--bg3); }
+.chal:last-child{ border-bottom:none; }
+.chal .st{ width:9px; height:9px; border-radius:50%; }
+.st.running{ background:var(--accent); animation:pulse 1.8s infinite; }
+.st.solved{ background:var(--green); }
+.st.pending{ background:var(--text3); }
+.st.parked{ background:var(--orange); }
+.st.failed{ background:var(--red); }
+.chal .nm{ font-weight:600; font-size:13.5px; }
+.chal .meta{ display:flex; gap:8px; align-items:center; margin-top:3px; color:var(--text3); font-size:11.5px; }
+.cat{ font-family:var(--mono); font-size:10.5px; padding:1px 6px; border-radius:4px; text-transform:uppercase; letter-spacing:.06em; }
+.cat.pwn{ color:var(--red); background:color-mix(in oklab,var(--red) 14%,transparent); }
+.cat.crypto{ color:var(--purple); background:color-mix(in oklab,var(--purple) 14%,transparent); }
+.cat.web{ color:var(--cyan); background:color-mix(in oklab,var(--cyan) 14%,transparent); }
+.cat.rev{ color:var(--accent); background:color-mix(in oklab,var(--accent) 14%,transparent); }
+.cat.forensics{ color:var(--green); background:color-mix(in oklab,var(--green) 14%,transparent); }
+.cat.misc,.cat.other{ color:var(--blue); background:color-mix(in oklab,var(--blue) 14%,transparent); }
+.chal .racers{ display:flex; align-items:center; gap:4px; }
+.rc{ width:22px; height:22px; border-radius:6px; display:grid; place-items:center; font-family:var(--mono); font-size:10px; font-weight:600;
+  border:1px solid var(--border2); color:#0d0d0d; }
+.chal .pts{ font-family:var(--mono); color:var(--text2); font-size:12px; min-width:44px; text-align:right; }
+
+.feed{ max-height:340px; overflow:auto; font-family:var(--mono); font-size:12px; padding:6px 0; }
+.feed .ln{ padding:4px 14px; display:flex; gap:9px; align-items:baseline; }
+.feed .ln .t{ color:var(--text3); flex:none; }
+.feed .ln .who{ font-weight:600; flex:none; }
+.feed .ln .msg{ color:var(--text2); }
+.feed .ln.win{ background:color-mix(in oklab,var(--green) 8%,transparent); }
+.feed .ln.win .msg{ color:var(--green); }
+.feed .ln.op{ background:color-mix(in oklab,var(--accent) 8%,transparent); }
+.feed .ln.err .msg{ color:var(--red); }
+
+.acctrow{ display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--border); }
+.acctrow:last-child{ border-bottom:none; }
+.bar{ height:6px; border-radius:99px; background:var(--bg4); overflow:hidden; flex:1; }
+.bar > i{ display:block; height:100%; border-radius:99px; }
+
+.fleet{ grid-template-columns: 340px 1fr; align-items:start; }
+@media (max-width:1000px){ .fleet{ grid-template-columns:1fr; } }
+.tree{ font-size:13px; }
+.node-row{ display:flex; align-items:center; gap:8px; padding:7px 10px; border-radius:var(--radius-sm); cursor:pointer; }
+.node-row:hover{ background:var(--bg3); }
+.node-row.sel{ background:var(--bg3); }
+.twist{ width:14px; color:var(--text3); transition:transform .15s; flex:none; text-align:center; font-size:10px; }
+.twist.open{ transform:rotate(90deg); }
+.node-ic{ width:20px; height:20px; border-radius:5px; display:grid; place-items:center; font-family:var(--mono); font-size:10px; font-weight:700; flex:none; color:#0d0d0d; }
+.node-nm{ font-weight:500; }
+.node-sub{ color:var(--text3); font-size:11px; font-family:var(--mono); margin-left:auto; }
+.kids{ margin-left:16px; border-left:1px solid var(--border); padding-left:6px; overflow:hidden; }
+.kids.collapsed{ display:none; }
+
+.agcards{ grid-template-columns:repeat(auto-fill,minmax(250px,1fr)); }
+.agcard{ padding:13px; position:relative; overflow:hidden; }
+.agcard.running{ border-color:color-mix(in oklab,var(--accent) 40%,var(--border)); }
+.agcard.won{ border-color:color-mix(in oklab,var(--green) 45%,var(--border)); }
+.agcard h4{ font-family:var(--sans); font-size:13px; font-weight:600; }
+.agcard .prov{ display:flex; align-items:center; gap:8px; margin-bottom:9px; }
+.agcard .prov .node-ic{ width:24px; height:24px; }
+.agcard .row{ display:flex; justify-content:space-between; font-family:var(--mono); font-size:11.5px; color:var(--text2); padding:2px 0; }
+.agcard .row b{ color:var(--text); font-weight:600; }
+.agcard .now{ margin-top:9px; padding:7px 9px; background:var(--bg); border:1px solid var(--border); border-radius:6px;
+  font-family:var(--mono); font-size:11px; color:var(--text2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.agcard .ctrls{ display:flex; gap:5px; margin-top:10px; flex-wrap:wrap; }
+.icobtn{ width:28px; height:28px; border-radius:6px; border:1px solid var(--border); background:var(--bg3); color:var(--text2);
+  display:grid; place-items:center; cursor:pointer; font-size:13px; }
+.icobtn:hover{ background:var(--bg4); color:var(--text); }
+
+.agentview{ grid-template-columns: 1fr 320px; align-items:start; }
+@media (max-width:1080px){ .agentview{ grid-template-columns:1fr; } }
+.transcript{ max-height:560px; min-height:300px; overflow:auto; padding:4px 0; }
+.turn{ padding:9px 15px; border-bottom:1px solid var(--border); }
+.turn .head{ display:flex; align-items:center; gap:8px; margin-bottom:5px; }
+.turn .kind{ font-family:var(--mono); font-size:10px; text-transform:uppercase; letter-spacing:.08em; padding:1px 7px; border-radius:4px; }
+.kind.tool{ color:var(--cyan); background:color-mix(in oklab,var(--cyan) 14%,transparent); }
+.kind.think,.kind.info{ color:var(--purple); background:color-mix(in oklab,var(--purple) 14%,transparent); }
+.kind.out,.kind.success{ color:var(--green); background:color-mix(in oklab,var(--green) 14%,transparent); }
+.kind.op{ color:var(--accent); background:color-mix(in oklab,var(--accent) 16%,transparent); }
+.kind.error{ color:var(--red); background:color-mix(in oklab,var(--red) 14%,transparent); }
+.turn .ts{ margin-left:auto; color:var(--text3); font-family:var(--mono); font-size:11px; }
+.turn .say{ color:var(--text2); font-family:var(--mono); font-size:12px; white-space:pre-wrap; word-break:break-word; }
+.turn.opmsg{ background:color-mix(in oklab,var(--accent) 6%,transparent); }
+.turn.opmsg .say{ color:var(--text); }
+.composer{ display:flex; gap:8px; padding:12px 15px; border-top:1px solid var(--border); }
+.composer input{ flex:1; background:var(--bg); border:1px solid var(--border2); border-radius:var(--radius-sm);
+  color:var(--text); padding:9px 12px; font-family:var(--sans); font-size:13px; }
+.composer input:focus{ outline:none; border-color:var(--accent); }
+.who-msg{ display:flex; gap:9px; align-items:flex-start; padding:9px 0; border-bottom:1px solid var(--border); }
+.who-msg:last-child{ border-bottom:none; }
+.who-msg .who-av{ width:24px; height:24px; border-radius:50%; flex:none; display:grid; place-items:center; font-family:var(--mono); font-size:9px; font-weight:600; color:#fff; }
+.who-msg .body{ font-size:12.5px; min-width:0; }
+.who-msg .body .n{ font-weight:600; }
+.who-msg .body .tm{ color:var(--text3); font-size:11px; font-family:var(--mono); margin-left:6px; }
+.who-msg .body p{ margin:3px 0 0; color:var(--text2); word-break:break-word; }
+
+.team-grid{ grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); }
+.member{ padding:14px; }
+.member .top{ display:flex; align-items:center; gap:10px; padding:0; border:none; }
+.member .av{ width:40px; height:40px; border-radius:50%; font-size:15px; display:grid; place-items:center; color:#fff; font-weight:600; font-family:var(--mono); flex:none; }
+.member h4{ font-family:var(--sans); font-size:14px; }
+.member .role{ color:var(--text3); font-size:11.5px; }
+.member .subs{ margin-top:12px; display:flex; flex-direction:column; gap:7px; }
+.sub{ display:flex; align-items:center; gap:9px; padding:7px 9px; background:var(--bg); border:1px solid var(--border); border-radius:7px; }
+.sub .node-ic{ width:22px; height:22px; }
+.sub .snm{ font-family:var(--mono); font-size:11.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.sub .status{ margin-left:auto; font-family:var(--mono); font-size:10.5px; white-space:nowrap; }
+
+.connect{ grid-template-columns: 1fr 1fr; align-items:start; }
+@media (max-width:980px){ .connect{ grid-template-columns:1fr; } }
+.field{ margin-bottom:13px; }
+.field label{ display:block; margin-bottom:5px; }
+.field input, .field textarea, .field select{ width:100%; background:var(--bg); border:1px solid var(--border2);
+  border-radius:var(--radius-sm); color:var(--text); padding:9px 11px; font-family:var(--mono); font-size:12.5px; }
+.field textarea{ min-height:64px; resize:vertical; font-family:var(--sans); }
+.field input:focus,.field textarea:focus,.field select:focus{ outline:none; border-color:var(--accent); }
+.chatq{ display:flex; flex-direction:column; gap:11px; max-height:460px; overflow:auto; padding:4px 2px; }
+.bub{ max-width:88%; padding:9px 12px; border-radius:11px; font-size:12.5px; line-height:1.5; word-break:break-word; }
+.bub.ai{ align-self:flex-start; background:var(--bg3); border:1px solid var(--border); border-bottom-left-radius:3px; }
+.bub.ai .who{ color:var(--accent); font-weight:600; font-size:11px; font-family:var(--mono); display:block; margin-bottom:3px; }
+.bub.me{ align-self:flex-end; background:color-mix(in oklab,var(--accent) 16%,var(--bg3)); border:1px solid color-mix(in oklab,var(--accent) 30%,var(--border)); border-bottom-right-radius:3px; }
+.bub.sys{ align-self:center; background:transparent; color:var(--text3); font-family:var(--mono); font-size:11px; text-align:center; }
+
+.board{ display:grid; grid-template-columns:repeat(6,1fr); gap:12px; }
+@media (max-width:1200px){ .board{ grid-template-columns:repeat(3,1fr); } }
+@media (max-width:680px){ .board{ grid-template-columns:1fr; } }
+.col{ background:var(--bg2); border:1px solid var(--border); border-radius:var(--radius); padding:10px; min-height:120px; }
+.col-h{ display:flex; align-items:center; gap:7px; font-family:var(--cond); font-weight:700; font-size:12px;
+  text-transform:uppercase; letter-spacing:.05em; padding-bottom:9px; margin-bottom:8px; border-bottom:2px solid var(--border); }
+.col-h .ct{ margin-left:auto; font-family:var(--mono); color:var(--text3); font-size:11px; }
+.card{ background:var(--bg3); border:1px solid var(--border); border-radius:7px; padding:9px 10px; margin-bottom:8px; }
+.card:hover{ border-color:var(--border2); }
+.card .cn{ font-weight:600; font-size:12.5px; }
+.card .cc{ display:flex; gap:6px; margin-top:6px; align-items:center; flex-wrap:wrap; }
+
+.note{ font-size:11.5px; color:var(--text3); margin-top:6px; }
+.hero-note{ background:color-mix(in oklab,var(--accent) 8%,var(--bg2)); border:1px solid color-mix(in oklab,var(--accent) 25%,var(--border));
+  border-radius:var(--radius); padding:11px 14px; font-size:12.5px; color:var(--text2); margin-bottom:16px; display:flex; gap:10px; align-items:flex-start; }
+.hero-note b{ color:var(--accent); }
+
+/* user menu */
+.menu{ position:absolute; top:46px; right:14px; background:var(--bg2); border:1px solid var(--border2); border-radius:var(--radius);
+  box-shadow:var(--shadow); padding:6px; min-width:180px; z-index:60; display:none; }
+.menu.open{ display:block; }
+.menu a{ display:block; padding:8px 11px; border-radius:7px; font-size:13px; color:var(--text2); }
+.menu a:hover{ background:var(--bg3); color:var(--text); }
+
+/* toast */
+.toasts{ position:fixed; bottom:18px; right:18px; display:flex; flex-direction:column; gap:8px; z-index:100; }
+.toast{ background:var(--bg2); border:1px solid var(--border2); border-radius:var(--radius); padding:10px 14px; font-size:12.5px;
+  box-shadow:var(--shadow); max-width:340px; animation:fade .2s ease; }
+.toast.success{ border-color:color-mix(in oklab,var(--green) 45%,var(--border2)); }
+.toast.error{ border-color:color-mix(in oklab,var(--red) 45%,var(--border2)); }
+</style>
+</head>
+<body data-email="{{ user.email or user.login or 'user' }}" data-admin="{{ 'yes' if user.role == 'admin' else '' }}">
+<div class="app">
+  <nav class="rail">
+    <div class="brand">▲</div>
+    <button class="rail-btn active" data-nav="command"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h4l3-9 4 18 3-9h4"/></svg><span class="tip">Command</span></button>
+    <button class="rail-btn" data-nav="fleet"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="2.4"/><circle cx="5" cy="19" r="2.4"/><circle cx="19" cy="19" r="2.4"/><path d="M12 7.4v4M12 11.4 5.6 16.8M12 11.4l6.4 5.4"/></svg><span class="tip">Agent Fleet</span></button>
+    <button class="rail-btn" data-nav="agent"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="12" rx="2"/><path d="M8 20h8M12 16v4M9 9h.01M15 9h.01"/></svg><span class="tip">Agent Detail</span></button>
+    <button class="rail-btn" data-nav="team"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="8" r="3"/><path d="M3 20a6 6 0 0 1 12 0M16 6a3 3 0 0 1 0 6M21 20a5.5 5.5 0 0 0-4-5.3"/></svg><span class="tip">Team &amp; Subs</span></button>
+    <button class="rail-btn" data-nav="connect"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 12a3 3 0 0 0 4.2 0l2.3-2.3a3 3 0 0 0-4.2-4.2L12 6"/><path d="M15 12a3 3 0 0 0-4.2 0L8.5 14.3a3 3 0 0 0 4.2 4.2l1.3-1.3"/></svg><span class="tip">Connect Platform</span></button>
+    <button class="rail-btn" data-nav="board"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="5" height="16" rx="1"/><rect x="10" y="4" width="5" height="10" rx="1"/><rect x="17" y="4" width="4" height="14" rx="1"/></svg><span class="tip">Kanban</span></button>
+    <div class="rail-sp"></div>
+    <div class="avatar" id="userAvatar">DM</div>
+  </nav>
+
+  <header class="top">
+    <div>
+      <div class="screen-name" id="screenName">Command</div>
+      <div class="crumb mono" id="crumb">no CTF selected</div>
+    </div>
+    <div class="top-sp"></div>
+    <div class="ap" title="Autopilot: coordinator selects challenges, spawns solvers, rotates subscriptions on limits, auto-submits confirmed flags.">
+      <span class="lab">Autopilot</span>
+      <span class="switch on" id="apSwitch" role="switch" aria-checked="true" tabindex="0"></span>
+    </div>
+    <div class="pill mono"><span class="dot" id="wsDot"></span> <span id="onlineTxt">online</span></div>
+    <div class="pill mono"><span class="dot amber"></span> <span id="costTxt">$0.00</span></div>
+    <div class="pill mono" id="clock">--:--</div>
+  </header>
+
+  <main class="main">
+    <!-- COMMAND -->
+    <section class="screen active" data-screen="command">
+      <div class="runbar">
+        <span class="label">Run</span>
+        <select id="runCtf"><option value="">select a CTF…</option></select>
+        <label class="inl">conc <input id="runConc" type="number" min="1" max="30" value="10" style="width:52px;background:var(--bg);border:1px solid var(--border2);color:var(--text);border-radius:6px;padding:5px 7px"></label>
+        <label class="inl"><input type="checkbox" id="runDry"> dry run</label>
+        <div class="sp"></div>
+        <button class="btn primary" id="btnStart">▶ Start run</button>
+        <button class="btn danger" id="btnStop" disabled>■ Stop</button>
+        <span class="tag" id="runStatusTag">idle</span>
+      </div>
+
+      <div class="grid kpis" id="kpis"></div>
+
+      <div class="grid cmd-cols" style="margin-top:14px">
+        <div class="panel">
+          <div class="panel-h"><h3>Live challenges</h3><span class="tag amber" id="chalCount">0</span><span class="tag" style="margin-left:8px">click to open swarm</span></div>
+          <div id="chalList"><div class="empty">No challenges yet. Select a CTF and start a run.</div></div>
+        </div>
+        <div class="grid" style="gap:14px">
+          <div class="panel">
+            <div class="panel-h"><h3>Activity feed</h3><span class="tag green">auto + human</span></div>
+            <div class="feed" id="feed"><div class="empty">Quiet. Activity from agents and teammates shows here.</div></div>
+          </div>
+          <div class="panel">
+            <div class="panel-h"><h3>Subscription pool</h3><span class="tag" id="poolCount">shared</span></div>
+            <div class="panel-b" style="padding-top:6px">
+              <div id="poolMini"><div class="empty">No accounts pooled. Connect one on Team &amp; Subs.</div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- FLEET -->
+    <section class="screen" data-screen="fleet">
+      <div class="hero-note"><span style="color:var(--accent)">⌗</span><div>The <b>fleet tree</b> mirrors the real hierarchy: <b>coordinator</b> → a <b>swarm</b> per challenge → racing <b>solvers</b> (one per model). Pick a solver to open its live transcript.</div></div>
+      <div class="grid fleet">
+        <div class="panel">
+          <div class="panel-h"><h3>Fleet</h3><span class="tag amber" id="fleetCount">0 solvers</span></div>
+          <div class="panel-b tree" id="tree"><div class="empty">No live swarms.</div></div>
+        </div>
+        <div class="grid" style="gap:14px">
+          <div class="panel">
+            <div class="panel-h"><h3 id="swarmTitle">Select a challenge</h3><span class="tag" style="margin-left:auto" id="swarmMeta"></span></div>
+            <div class="panel-b"><div class="grid agcards" id="agCards"><div class="empty">Pick a swarm from the tree.</div></div></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- AGENT -->
+    <section class="screen" data-screen="agent">
+      <div class="grid agentview">
+        <div class="panel">
+          <div class="panel-h">
+            <span class="node-ic" id="agIc" style="background:var(--accent)">--</span>
+            <div><h3 id="agTitle">No agent selected</h3><div class="crumb mono" id="agSub" style="font-size:11px">open one from the Fleet</div></div>
+            <span class="tag amber" style="margin-left:auto" id="agStatus"></span>
+          </div>
+          <div class="transcript" id="transcript"><div class="empty">Pick a solver in the Fleet to watch its live transcript here.</div></div>
+          <div class="composer">
+            <input id="agInput" placeholder="Message this agent — injected into its next turn…" disabled>
+            <button class="btn primary" id="agSend" disabled>Send</button>
+          </div>
+        </div>
+        <div class="grid" style="gap:14px">
+          <div class="panel">
+            <div class="panel-h"><h3>Who steered this agent</h3></div>
+            <div class="panel-b" id="whoList"><div class="empty">No interventions yet.</div></div>
+          </div>
+          <div class="panel">
+            <div class="panel-h"><h3>Controls</h3></div>
+            <div class="panel-b" style="display:flex; gap:7px; flex-wrap:wrap" id="agControls">
+              <button class="btn sm" data-act="pause" disabled>⏸ Pause</button>
+              <button class="btn sm" data-act="resume" disabled>▶ Resume</button>
+              <button class="btn sm" data-act="restart" disabled>↻ Restart</button>
+              <button class="btn sm" data-act="swap_account" disabled>⇄ Swap account</button>
+              <button class="btn sm danger" data-act="stop" disabled>⏹ Stop</button>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-h"><h3>Sibling findings</h3><span class="tag">shared bus</span></div>
+            <div class="panel-b" id="siblings" style="font-family:var(--mono);font-size:11.5px;color:var(--text2);display:flex;flex-direction:column;gap:8px"><div class="empty">No sibling findings yet.</div></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TEAM -->
+    <section class="screen" data-screen="team">
+      <div class="hero-note"><span style="color:var(--accent)">◎</span><div>No API keys. Everyone connects their own <b>subscriptions</b> — Claude, Codex, Copilot, Grok, Kimi, Antigravity — into one <b>shared pool</b>. Autopilot borrows whoever's free and rotates on limits. <a href="/accounts" style="color:var(--accent)">Manage the pool →</a></div></div>
+      <div class="grid team-grid" id="teamGrid"><div class="empty">Loading team…</div></div>
+    </section>
+
+    <!-- CONNECT -->
+    <section class="screen" data-screen="connect">
+      <div class="hero-note"><span style="color:var(--accent)">⚇</span><div>Point Flagrunner at <b>any platform</b>. Give it a URL, credentials and a note. A <b>connector agent</b> probes the site and, when it can't infer something, <b>asks you</b> for the exact detail — then saves it as a reusable adapter.</div></div>
+      <div class="grid connect">
+        <div class="panel">
+          <div class="panel-h"><h3>New platform</h3><span class="tag purple">agent-driven</span></div>
+          <div class="panel-b">
+            <div class="field"><label class="label">Name</label><input id="cxName" placeholder="e.g. HTB Business CTF"></div>
+            <div class="field"><label class="label">Site URL</label><input id="cxUrl" placeholder="https://ctf.example.com"></div>
+            <div class="field"><label class="label">Platform type</label>
+              <select id="cxType"><option value="generic">Auto-detect (let the agent probe)</option><option value="ctfd">CTFd</option><option value="rctf">rCTF</option></select>
+            </div>
+            <div class="field"><label class="label">Credentials / token</label><input id="cxToken" type="password" placeholder="team token / access token"></div>
+            <div class="field"><label class="label">Notes for the agent</label><textarea id="cxContext" placeholder="e.g. we log in with a team token in an Authorization: Bearer header; flags look like HTB{...}"></textarea></div>
+            <button class="btn primary" id="cxProbe">Probe &amp; connect</button>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-h"><h3>Connector agent</h3><span class="tag" style="margin-left:auto" id="cxState">idle</span></div>
+          <div class="panel-b"><div class="chatq" id="connectChat"><div class="empty">Fill the form and hit Probe. The agent's questions appear here.</div></div><div id="cxQuestions"></div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- BOARD -->
+    <section class="screen" data-screen="board">
+      <div class="hero-note"><span style="color:var(--accent)">▤</span><div>The team <b>kanban</b> stays in sync with the platform and the swarms. <a href="/team" style="color:var(--accent)">Open the full editable board →</a></div>
+        <select id="boardCtf" style="margin-left:auto;background:var(--bg);border:1px solid var(--border2);color:var(--text);border-radius:7px;padding:6px 9px;font-size:12px"></select>
+      </div>
+      <div class="board" id="board"><div class="empty">Select a CTF to load its board.</div></div>
+    </section>
+  </main>
+</div>
+
+<div class="menu" id="userMenu">
+  <a href="/accounts">Accounts &amp; subscriptions</a>
+  <a href="/settings">Settings</a>
+  <a href="/ctfs">Manage CTFs</a>
+  <a href="/team">Full kanban board</a>
+  <a href="/admin" id="menuAdmin" hidden>Admin</a>
+  <a href="/auth/logout">Log out</a>
+</div>
+<div class="toasts" id="toasts"></div>
+
+<script src="/static/spa.js"></script>
+</body>
+</html>

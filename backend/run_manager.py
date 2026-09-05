@@ -44,6 +44,8 @@ class GlobalRunManager:
         # Label of the pooled account the coordinator is currently signed in as.
         self._coordinator_account: str | None = None
         self._coordinator_note: str | None = None
+        # What this run can actually do (models, seats, idle subscriptions).
+        self._plan: dict | None = None
         self._max_concurrent: int = 10
         # Set while a coordinator is running, so live control changes apply.
         self._live_deps = None
@@ -63,6 +65,7 @@ class GlobalRunManager:
             "last_error": self._last_error,
             "coordinator_account": self._coordinator_account,
             "coordinator_note": self._coordinator_note,
+            "plan": self._plan,
             "max_concurrent": self._max_concurrent,
             "stopped_challenges": sorted(self.stopped_challenges),
             "priority_challenges": sorted(self.priority_challenges),
@@ -157,6 +160,34 @@ class GlobalRunManager:
                 await get_account_pool().reload()
             except Exception as e:
                 logger.warning("Account pool reload failed at run start: %s", e)
+
+            # Work out — and record — what this run can actually do, so a
+            # mis-selected model or an exhausted account is visible up front
+            # instead of showing up as "it only solves one at a time".
+            try:
+                from backend.run_plan import build_run_plan
+
+                plan = build_run_plan(
+                    model_specs,
+                    coordinator_backend=coordinator_backend,
+                    max_concurrent_challenges=getattr(
+                        settings, "max_concurrent_challenges", self._max_concurrent
+                    ),
+                    ambient_concurrency=getattr(settings, "ambient_solver_concurrency", 1),
+                )
+                self._plan = plan.as_dict()
+                # Unknown specs would fail per-solver at run time; drop them here.
+                if plan.model_specs:
+                    model_specs = plan.model_specs
+                for w in plan.warnings:
+                    logger.warning("Run plan: %s", w)
+                logger.info(
+                    "Run plan: %d model(s) %s, solver seats %s",
+                    len(plan.model_specs), plan.model_specs, plan.solver_capacity,
+                )
+            except Exception as e:
+                logger.warning("Could not build the run plan: %s", e)
+                self._plan = None
 
             self._started_by_user_id = user_id
             self._started_at = dt.datetime.now(dt.UTC)

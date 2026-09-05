@@ -415,17 +415,30 @@
     // warning, and the last failure — previously all of this was only visible
     // in the server journal.
     const note = $("#runNote");
-    if (st.last_error) {
-      note.className = "runnote err";
-      note.textContent = st.last_error;
-      note.hidden = false;
-    } else if (st.coordinator_note) {
-      note.className = "runnote warn";
-      note.textContent = st.coordinator_note;
-      note.hidden = false;
-    } else if (st.coordinator_account) {
+    const rows = [];
+    const plan = st.plan;
+    if (plan) {
+      // What the run will actually do: which models, which subscription each
+      // needs, and how many can hold an account at once.
+      const models = plan.model_specs || [];
+      const seats = Object.entries(plan.solver_capacity || {})
+        .map(([p, n]) => `${p} ×${n}`).join(", ");
+      rows.push({ cls: "", html: models.length
+        ? `Solving with <span class="who">${models.map(esc).join(", ")}</span>`
+          + (seats ? ` · seats: <span class="who">${esc(seats)}</span>` : "")
+        : "No usable model selected." });
+      (plan.warnings || []).forEach(w => rows.push({ cls: "warn", html: esc(w) }));
+    }
+    if (st.coordinator_account) {
+      rows.unshift({ cls: "", html: 'Coordinator signed in as <span class="who">'
+        + esc(st.coordinator_account) + "</span>" });
+    }
+    if (st.coordinator_note) rows.push({ cls: "warn", html: esc(st.coordinator_note) });
+    if (st.last_error) rows.push({ cls: "err", html: esc(st.last_error) });
+
+    if (rows.length) {
       note.className = "runnote";
-      note.innerHTML = 'Coordinator signed in as <span class="who">' + esc(st.coordinator_account) + "</span>";
+      note.innerHTML = rows.map(r => `<div class="${r.cls}">${r.html}</div>`).join("");
       note.hidden = false;
     } else {
       note.hidden = true;

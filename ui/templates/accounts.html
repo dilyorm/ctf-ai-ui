@@ -490,13 +490,21 @@
       const code = document.getElementById('modal-code-field').value.trim();
       if (!code) return;
       const statusEl = document.getElementById('modal-status');
+      const detail = document.getElementById('modal-detail');
+      detail.style.display = 'none';
       statusEl.textContent = 'Submitting code…';
-      const r = await fetch(`/api/accounts/${connectId}/code`, {
-        method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ code }),
-      });
-      const d = await r.json();
-      statusEl.textContent = d.ok ? 'Code submitted, finishing sign-in…' : 'Code rejected. Check and retry.';
+      let d;
+      try {
+        const r = await fetch(`/api/accounts/${connectId}/code`, {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ code }),
+        });
+        d = await r.json();
+      } catch { statusEl.textContent = 'Network error submitting the code.'; return; }
+      if (!d.ok) { statusEl.textContent = 'Could not reach the sign-in session. Cancel and start over.'; return; }
+      statusEl.textContent = 'Waiting for sign-in to complete…';
+      // A rejected first attempt stopped the poll; re-arm it for the retry.
+      if (!pollTimer) startConnectPolling(connectId, statusEl, detail);
     }
 
     async function connect(provider) {
@@ -547,7 +555,7 @@
         document.getElementById('modal-code-link').href = d.auth_url;
       } else if (d.auth_url) {
         msg.textContent = d.needs_code
-          ? 'Open this URL, authorize, copy the code Anthropic shows you, then come back and paste it below.'
+          ? 'Open this URL, authorize, copy the whole code Anthropic shows you (including the part after #), then come back and paste it below. Each code works once — if it is rejected, reopen the link for a fresh one.'
           : 'Open this URL and sign in, then come back — this page finishes on its own.';
         urlBox.style.display = 'block';
         document.getElementById('modal-url-text').textContent = d.auth_url;
@@ -582,8 +590,16 @@
         }
         if (cd.status === 'failed') {
           stopPolling();
-          statusEl.textContent = cd.error || 'Sign-in failed.';
+          statusEl.textContent = cd.can_retry
+            ? `${cd.error} — paste a fresh code below and submit again.`
+            : (cd.error || 'Sign-in failed.');
           if (cd.detail) { detail.textContent = cd.detail; detail.style.display = 'block'; }
+          if (cd.can_retry) {
+            // Codes are single-use: send the operator back for a new one.
+            document.getElementById('modal-codeinput').style.display = 'block';
+            document.getElementById('modal-code-field').value = '';
+            setStep('open');
+          }
           return;
         }
         if (cd.expires_in != null) expiresAt = Date.now() + cd.expires_in * 1000;

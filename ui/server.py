@@ -2387,6 +2387,18 @@ async def api_account_check(
         await get_account_pool().reload()
         return JSONResponse({"ok": True, "status": "authenticated"})
     sess = mgr.status(account_id)
+    if sess and sess.get("error"):
+        # The CLI printed a failure and (for Claude) is parked on a retry
+        # prompt. Say so instead of leaving the browser on "finishing sign-in…".
+        return JSONResponse(
+            {
+                "ok": True,
+                "status": "failed",
+                "error": sess["error"],
+                "detail": sess.get("tail", ""),
+                "can_retry": sess.get("can_retry", False),
+            }
+        )
     if sess and not sess.get("alive"):
         return JSONResponse(
             {
@@ -2395,6 +2407,7 @@ async def api_account_check(
                 "error": "Sign-in ended without writing credentials. "
                 "The code may have expired — start over.",
                 "detail": sess.get("tail", ""),
+                "can_retry": False,
             }
         )
     return JSONResponse(

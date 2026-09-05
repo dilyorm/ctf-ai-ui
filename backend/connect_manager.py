@@ -3,11 +3,16 @@
 Claude Code and Codex have no clean non-interactive sign-in, so we drive their
 real CLIs and surface the OAuth step to the browser:
 
-- **Claude** (`claude setup-token`): runs a TUI that needs a PTY. We allocate a
+- **Claude** (`claude auth login --claudeai`): needs a PTY. We allocate a
   pseudo-terminal, scrape the ``https://claude.com/.../oauth/authorize?code=true``
   URL it prints, show it to the user, then write the authorization code they
-  paste back into the PTY's stdin. The CLI exchanges it and writes a long-lived
-  token into ``CLAUDE_CONFIG_DIR``.
+  paste back into the PTY's stdin. The CLI exchanges it and writes
+  ``.credentials.json`` into ``CLAUDE_CONFIG_DIR``.
+
+  Not ``claude setup-token``: that mints a long-lived CI token scoped
+  ``user:inference`` only, and drives an Ink TUI that parks on "Press Enter to
+  retry" when an exchange fails — which looked, from the browser, like a
+  sign-in that never finished.
 - **Codex** (`codex login --device-auth`): prints a device URL + one-time code
   and polls the auth server itself, writing credentials into ``HOME/.codex`` on
   success. We just surface the URL + code and keep the process alive.
@@ -42,6 +47,20 @@ _CODEX_CODE = re.compile(r"\b[A-Z0-9]{4}-[A-Z0-9]{4,6}\b")
 _GROK_URL = re.compile(r"https://\S*(?:device|auth|x\.ai|grok)\S*", re.I)
 _ANY_URL = re.compile(r"https://\S+")
 
+# The CLIs report a rejected/expired authorization code on their own stdout and
+# then sit at a retry prompt forever. Without scraping these the browser just
+# says "finishing sign-in..." indefinitely.
+_ERROR_MARKERS = (
+    "oauth error",
+    "authentication failed",
+    "invalid code",
+    "invalid_grant",
+    "request failed with status code",
+    "login failed",
+    "sign-in failed",
+)
+_RETRY_MARKER = "press enter to retry"
+
 _SESSION_TTL = 900  # 15 min
 
 
@@ -57,6 +76,24 @@ class _Session:
     user_code: str = ""
     created_at: float = dataclasses.field(default_factory=time.time)
     exited: bool = False  # the CLI's output stream closed / process ended
+    submitted_at: float = 0.0  # when a code was last written to stdin
+
+    def error(self) -> str:
+        """The CLI's own failure line, if it printed one after the last submit.
+
+        Only text produced *after* the code was submitted counts, so the banner
+        text a CLI prints at startup can never be mistaken for a failure.
+        """
+        if not self.submitted_at:
+            return ""
+        for line in reversed(self.buffer.splitlines()):
+            low = line.strip().lower()
+            if any(m in low for m in _ERROR_MARKERS):
+                return line.strip()[:200]
+        return ""
+
+    def at_retry_prompt(self) -> bool:
+        return _RETRY_MARKER in self.buffer[-2000:].lower()
 
     @property
     def expires_at(self) -> float:
@@ -97,8 +134,14 @@ class ConnectManager:
         }
         claude_bin = _which("claude")
         try:
+            # `auth login --claudeai`, NOT `setup-token`: setup-token mints a
+            # long-lived CI token scoped `user:inference` only and drives an Ink
+            # TUI whose errors we can't surface; `auth login` is the real
+            # subscription sign-in (full scope, plain prompts) and writes
+            # `.credentials.json` into CLAUDE_CONFIG_DIR, which is what the pool
+            # checks for.
             proc = await asyncio.create_subprocess_exec(
-                claude_bin, "setup-token",
+                claude_bin, "auth", "login", "--claudeai",
                 stdin=slave, stdout=slave, stderr=slave,
                 env=env, start_new_session=True, close_fds=True,
             )
@@ -193,12 +236,22 @@ class ConnectManager:
                 "user_code": self._sessions[account_id].user_code, "needs_code": False}
 
     async def submit_code(self, account_id: int, code: str) -> bool:
-        """Write a pasted authorization code into the Claude PTY's stdin."""
+        """Write a pasted authorization code into the Claude PTY's stdin.
+
+        If a previous code was rejected the CLI is parked on "Press Enter to
+        retry", not on the paste prompt — send the Enter first so a second
+        attempt works without restarting the whole sign-in.
+        """
         sess = self._sessions.get(account_id)
         if not sess or sess.master_fd is None:
             return False
         try:
+            if sess.at_retry_prompt():
+                os.write(sess.master_fd, b"\r")
+                await asyncio.sleep(0.6)
+                sess.buffer = ""  # the old error must not mask the new attempt
             os.write(sess.master_fd, (code.strip() + "\r").encode())
+            sess.submitted_at = time.time()
             return True
         except OSError:
             return False
@@ -214,11 +267,16 @@ class ConnectManager:
         if not sess:
             return {}
         dead = sess.exited or (sess.proc is not None and sess.proc.returncode is not None)
+        error = sess.error()
         return {
             "alive": not dead,
             "provider": sess.provider,
             "expires_in": max(0, int(sess.expires_at - time.time())),
-            "tail": sess.tail() if dead else "",
+            # A live CLI parked on a retry prompt has still failed as far as the
+            # operator is concerned, so report the error either way.
+            "error": error,
+            "can_retry": bool(error) and not dead,
+            "tail": sess.tail() if (dead or error) else "",
         }
 
     async def finish(self, account_id: int) -> None:

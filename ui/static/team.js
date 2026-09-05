@@ -505,13 +505,23 @@ async function uploadAttachment(file, kind) {
   if (state.selectedTaskId == null) return;
   const fd = new FormData();
   fd.append("file", file);
+  window.toast(`Uploading ${file.name}…`, "info");
   try {
     const res = await fetch(
       `/api/team/tasks/${state.selectedTaskId}/attachments?kind=${encodeURIComponent(kind)}`,
       { method: "POST", body: fd }
     );
-    const data = await res.json();
-    if (!data.ok) throw new Error(data.error || "upload failed");
+    // A too-large upload can be rejected by the proxy (nginx) with an HTML page,
+    // not JSON — reading .json() on that throws "unexpected character". Read text
+    // first and surface a real message.
+    const raw = await res.text();
+    let data;
+    try { data = JSON.parse(raw); } catch { data = null; }
+    if (!res.ok || !data || !data.ok) {
+      const msg = (data && data.error)
+        || (res.status === 413 ? "file too large for the server to accept" : `upload failed (HTTP ${res.status})`);
+      throw new Error(msg);
+    }
     window.toast("Uploaded", "success");
     const refreshed = await apiGet(`/api/team/tasks/${state.selectedTaskId}`);
     renderAttachments(refreshed.task.attachments || []);

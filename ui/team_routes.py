@@ -43,7 +43,10 @@ router = APIRouter()
 
 STATUS_VALUES = ("todo", "in_progress", "blocked", "needs_review", "solved", "skipped")
 ASSIGNEE_TYPES = ("user", "ai")
-MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024  # 10 MB per file
+import os as _os
+# CTF distfiles get big (binaries, pcaps, disk images). Cap generously;
+# override with ATTACHMENT_MAX_MB. nginx client_max_body_size must be >= this.
+MAX_ATTACHMENT_BYTES = int(_os.environ.get('ATTACHMENT_MAX_MB', '512')) * 1024 * 1024
 
 
 def _normalize_description(raw: str, platform: str) -> str:
@@ -523,8 +526,9 @@ async def api_team_add_attachment(
         return JSONResponse({"ok": False, "error": "invalid kind"}, status_code=400)
     data = await file.read()
     if len(data) > MAX_ATTACHMENT_BYTES:
+        mb = MAX_ATTACHMENT_BYTES // (1024 * 1024)
         return JSONResponse(
-            {"ok": False, "error": f"file too large (> {MAX_ATTACHMENT_BYTES} bytes)"},
+            {"ok": False, "error": f"file too large — the limit is {mb} MB"},
             status_code=413,
         )
     att = TaskAttachment(

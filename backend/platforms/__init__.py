@@ -18,7 +18,7 @@ from typing import Any
 from backend.platforms.base import PlatformClient
 from backend.platforms.rctf import RCTFClient
 
-SUPPORTED_PLATFORMS = ("ctfd", "rctf", "generic")
+SUPPORTED_PLATFORMS = ("ctfd", "rctf", "generic", "manual")
 
 
 def make_platform_client(
@@ -29,6 +29,7 @@ def make_platform_client(
     password: str = "admin",
     api_base: str = "/api/v1",
     adapter: dict[str, Any] | str | None = None,
+    ctf_id: int = 0,
 ) -> PlatformClient:
     """Return the appropriate client for *platform* (ctfd | rctf | generic).
 
@@ -37,6 +38,20 @@ def make_platform_client(
     ``backend.platforms.generic`` for the spec shape.
     """
     p = (platform or "ctfd").lower().strip()
+
+    if p == "manual":
+        # Solve hand-entered challenges (kanban Tasks); the operator submits
+        # flags themselves. ctf_id says which CTF's Tasks to read; fall back to
+        # parsing a ``manual://ctf/<id>`` base url (no event loop needed).
+        import re as _re
+
+        from backend.platforms.manual import ManualPlatformClient
+
+        cid = ctf_id
+        if not cid:
+            m = _re.search(r"manual://ctf/(\d+)", base_url or "")
+            cid = int(m.group(1)) if m else 0
+        return ManualPlatformClient(ctf_id=cid)
 
     if p == "generic":
         from backend.platforms.generic import GenericHTTPClient

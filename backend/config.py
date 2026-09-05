@@ -57,6 +57,8 @@ class Settings(BaseSettings):
     # Infra
     sandbox_image: str = "ctf-sandbox"
     max_concurrent_challenges: int = 10
+    # For the manual platform: which CTF's hand-entered Tasks to solve.
+    ctf_id: int = 0
     # Parallel solver sessions allowed on a subscription that is NOT in the
     # account pool (the server's own CLI login). Pooled accounts use their own
     # per-account `max_concurrent` instead.

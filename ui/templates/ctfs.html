@@ -89,6 +89,7 @@
         <div class="form-group">
           <label>Platform <span class="required">*</span></label>
           <select id="new-ctf-platform">
+            <option value="manual">Manual — add challenges by hand, submit flags yourself</option>
             <option value="ctfd">CTFd</option>
             <option value="rctf">rCTF</option>
             <option value="generic">Any platform (auto-detect &amp; connect)</option>
@@ -169,8 +170,9 @@
     const name = nameInput.value.trim();
     const url = urlInput.value.trim();
     const token = tokenInput.value.trim();
-    if (!name || !url) {
-      errBox.textContent = "Name and URL are required.";
+    const manual = platformInput.value === "manual";
+    if (!name || (!url && !manual)) {
+      errBox.textContent = manual ? "Name is required." : "Name and URL are required.";
       errBox.style.display = "block";
       return;
     }
@@ -183,7 +185,7 @@
         body: JSON.stringify({
           name,
           platform: platformInput.value || "ctfd",
-          ctfd_url: url,
+          ctfd_url: url || (platformInput.value === "manual" ? "manual://local" : ""),
           ctfd_token: token,
           api_base: (document.getElementById("new-ctf-apibase").value.trim() || "/api/v1"),
         }),
@@ -218,14 +220,22 @@
   platformInput.addEventListener("change", () => {
     const hint = document.getElementById("new-ctf-token-hint");
     const generic = platformInput.value === "generic";
-    apibaseGroup.style.display = generic ? "none" : "block";
+    const manual = platformInput.value === "manual";
+    apibaseGroup.style.display = (generic || manual) ? "none" : "block";
     contextGroup.style.display = generic ? "block" : "none";
     connectorPanel.style.display = "none";
     connectorPanel.querySelector("#connector-chat").innerHTML = "";
     document.getElementById("connector-questions").innerHTML = "";
     btnProbe.style.display = generic ? "inline-flex" : "none";
     btnSave.style.display = generic ? "none" : "inline-flex";
-    if (platformInput.value === "rctf") {
+    // Manual CTFs have no upstream — hide URL/token entirely.
+    const urlGroup = urlInput.closest(".form-group");
+    const tokenGroup = tokenInput.closest(".form-group");
+    if (urlGroup) urlGroup.style.display = manual ? "none" : "block";
+    if (tokenGroup) tokenGroup.style.display = manual ? "none" : "block";
+    if (manual) {
+      hint.textContent = "";
+    } else if (platformInput.value === "rctf") {
       hint.textContent = "rCTF: copy the team login token from your profile page (Authorization: Bearer …).";
     } else if (generic) {
       hint.textContent = "Whatever token the platform uses. The agent will ask where it goes.";

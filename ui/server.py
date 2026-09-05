@@ -896,10 +896,16 @@ async def api_create_ctf(
             {"ok": False, "error": f"platform must be one of {SUPPORTED_PLATFORMS}"},
             status_code=400,
         )
-    if not name or not ctfd_url:
+    # A manual CTF has no upstream platform — you add challenges by hand and
+    # submit flags yourself — so it needs no URL or token.
+    if platform == "manual":
+        ctfd_url = ctfd_url or "manual://local"
+    elif not name or not ctfd_url:
         return JSONResponse(
             {"ok": False, "error": "name and URL are required"}, status_code=400
         )
+    if not name:
+        return JSONResponse({"ok": False, "error": "name is required"}, status_code=400)
 
     existing = (
         await db.execute(select(CTFModel).where(CTFModel.user_id == user.id, CTFModel.name == name))
@@ -1248,6 +1254,7 @@ async def api_run_start(
         settings = Settings()
         if ctf_row:
             settings.platform = (ctf_row.platform or "ctfd").lower()
+            settings.ctf_id = ctf_row.id  # manual platform reads this CTF's Tasks
             settings.ctfd_url = ctf_row.ctfd_url
             settings.ctfd_api_base = getattr(ctf_row, "api_base", "/api/v1") or "/api/v1"
             settings.platform_adapter_json = getattr(ctf_row, "adapter_json", "") or ""

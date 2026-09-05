@@ -56,6 +56,16 @@ class _Session:
     url: str = ""
     user_code: str = ""
     created_at: float = dataclasses.field(default_factory=time.time)
+    exited: bool = False  # the CLI's output stream closed / process ended
+
+    @property
+    def expires_at(self) -> float:
+        return self.created_at + _SESSION_TTL
+
+    def tail(self, lines: int = 6) -> str:
+        """Last few lines of CLI output — shown to the operator when sign-in dies."""
+        rows = [ln.strip() for ln in self.buffer.splitlines() if ln.strip()]
+        return "\n".join(rows[-lines:])
 
 
 class ConnectManager:
@@ -193,6 +203,24 @@ class ConnectManager:
         except OSError:
             return False
 
+    def status(self, account_id: int) -> dict:
+        """Liveness of a connect session: is the CLI still waiting, or did it die?
+
+        Returns ``{}`` when no session is tracked (already reaped, or the app
+        restarted mid-sign-in).
+        """
+        self._prune()
+        sess = self._sessions.get(account_id)
+        if not sess:
+            return {}
+        dead = sess.exited or (sess.proc is not None and sess.proc.returncode is not None)
+        return {
+            "alive": not dead,
+            "provider": sess.provider,
+            "expires_in": max(0, int(sess.expires_at - time.time())),
+            "tail": sess.tail() if dead else "",
+        }
+
     async def finish(self, account_id: int) -> None:
         """Tear down a session (call after creds are detected, or to cancel)."""
         sess = self._sessions.pop(account_id, None)
@@ -255,6 +283,13 @@ class ConnectManager:
                         sess.user_code = m.group(0)
         except Exception:
             pass
+        finally:
+            # stdout closed: the CLI is finished (success writes creds to disk,
+            # failure/expiry leaves nothing). Either way stop claiming "waiting".
+            sess.exited = True
+            if sess.proc:
+                with contextlib.suppress(Exception):
+                    await sess.proc.wait()
 
     async def _await_field(self, account_id: int, field: str, timeout: float) -> str:
         deadline = time.time() + timeout
@@ -274,6 +309,18 @@ class ConnectManager:
         stale = [aid for aid, s in self._sessions.items() if now - s.created_at > _SESSION_TTL]
         for aid in stale:
             asyncio.create_task(self.finish(aid))
+
+    async def reap_loop(self, interval: float = 60.0) -> None:
+        """Background reaper — drops expired sessions (and their CLI processes).
+
+        ``_prune`` alone only ran when someone started another sign-in, so an
+        abandoned connect left ``claude setup-token`` / ``codex login`` /
+        ``grok login`` running on the server indefinitely.
+        """
+        while True:
+            await asyncio.sleep(interval)
+            with contextlib.suppress(Exception):
+                self._prune()
 
 
 def _which(binary: str) -> str:

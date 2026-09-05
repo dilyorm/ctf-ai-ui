@@ -17,6 +17,7 @@ import os
 import re
 import secrets
 import shutil
+import time
 import uuid
 from datetime import UTC, datetime, timezone
 from pathlib import Path
@@ -48,6 +49,7 @@ from backend.cli_auth import (
     GROK_CONFIG_ROOT,
     claude_is_authenticated,
     codex_is_authenticated,
+    is_authenticated as cli_is_authenticated,
 )
 from backend.config import Settings
 from backend.crypto import open_opt, seal_opt
@@ -1924,7 +1926,7 @@ def _new_account_config_dir(provider: str) -> str:
     from backend.providers import TOKEN_POOL_PROVIDERS
 
     if provider in TOKEN_POOL_PROVIDERS:
-        # Token providers (copilot/grok/kimi/antigravity): no on-disk config dir.
+        # Token providers (copilot/kimi/antigravity): no on-disk config dir.
         # Use a synthetic unique value to satisfy the NOT NULL + UNIQUE
         # constraint on config_dir.
         return f"{provider}:{uuid.uuid4().hex}"
@@ -1932,15 +1934,90 @@ def _new_account_config_dir(provider: str) -> str:
     return os.path.join(root, f"acct-{uuid.uuid4().hex[:12]}")
 
 
+def _rmtree_managed(config_dir: str) -> None:
+    """Delete an account's config dir, but only under a root we own."""
+    if config_dir and (
+        config_dir.startswith(CLAUDE_CONFIG_ROOT)
+        or config_dir.startswith(CODEX_CONFIG_ROOT)
+        or config_dir.startswith(GROK_CONFIG_ROOT)
+    ):
+        shutil.rmtree(config_dir, ignore_errors=True)
+
+
+def _default_account_label(provider: str) -> str:
+    """A readable auto-label, e.g. ``copilot-9f3ac1``.
+
+    The old form sliced the config dir, which for token providers is
+    ``"<provider>:<uuid>"`` — producing labels like ``copilot-copilot:``.
+    """
+    return f"{provider}-{uuid.uuid4().hex[:6]}"
+
+
+# CLI subscription providers need their binary present on this host. Probing is
+# cheap but not free (each `--version` spawns a process), so cache the result.
+_CLI_BINARIES: dict[str, dict] = {
+    "claude": {"bin": "claude", "install": "npm install -g @anthropic-ai/claude-code"},
+    "codex": {"bin": "codex", "install": "npm install -g @openai/codex"},
+    "grok": {"bin": "grok", "install": "curl -fsSL https://x.ai/cli/install.sh | bash"},
+}
+_cli_probe_cache: tuple[float, dict] = (0.0, {})
+
+
+async def _probe_cli(name: str, binary: str) -> dict:
+    path = shutil.which(binary)
+    if not path:
+        return {"installed": False, "path": "", "version": ""}
+    version = ""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            path, "--version",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        )
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=8)
+        version = out.decode("utf-8", "replace").strip().splitlines()[0][:80] if out else ""
+    except Exception as e:  # noqa: BLE001 — a missing/broken CLI is data, not a crash
+        logger.debug("version probe for %s failed: %s", name, e)
+    return {"installed": True, "path": path, "version": version}
+
+
+@app.get("/api/accounts/capabilities")
+async def api_account_capabilities(user: User = Depends(_require_db_user)):
+    """Which subscription CLIs this server can actually drive.
+
+    The accounts page calls this before showing the connect buttons, so a
+    missing `claude` / `codex` binary is visible up front instead of surfacing
+    as a 404 halfway through a sign-in.
+    """
+    global _cli_probe_cache
+    now = time.time()
+    cached_at, cached = _cli_probe_cache
+    if cached and now - cached_at < 60:
+        return JSONResponse({"ok": True, "providers": cached})
+    results = await asyncio.gather(
+        *(_probe_cli(name, meta["bin"]) for name, meta in _CLI_BINARIES.items())
+    )
+    providers = {
+        name: {**res, "install": meta["install"]}
+        for (name, meta), res in zip(_CLI_BINARIES.items(), results, strict=True)
+    }
+    _cli_probe_cache = (now, providers)
+    return JSONResponse({"ok": True, "providers": providers})
+
+
 def _account_authed(acct: PooledAccount) -> bool:
-    """True if a pool account has usable credentials (token present, or CLI creds on disk)."""
+    """True if a pool account has usable credentials (token present, or CLI creds on disk).
+
+    Delegates to ``backend.cli_auth.is_authenticated`` — the same resolver the
+    account pool uses — so the accounts page and the pool can never disagree
+    about whether a connected account is authenticated. (They did: grok is a
+    ``cli`` provider, so it used to fall through to the codex check and every
+    connected Grok account was reported "pending" forever.)
+    """
     from backend.providers import TOKEN_POOL_PROVIDERS
 
     if acct.provider in TOKEN_POOL_PROVIDERS:
         return bool(acct.secret_enc)
-    if acct.provider == "claude":
-        return claude_is_authenticated(acct.config_dir)
-    return codex_is_authenticated(acct.config_dir)
+    return cli_is_authenticated(acct.provider, acct.config_dir)
 
 
 async def _spawn_claude_signin(config_dir: str) -> dict:
@@ -2073,7 +2150,7 @@ async def api_account_connect_token(
 
     acct = PooledAccount(
         provider=provider,
-        label=label or f"{provider}-{uuid.uuid4().hex[:6]}",
+        label=label or _default_account_label(provider),
         owner_user_id=user.id,
         config_dir=_new_account_config_dir(provider),
         secret_enc=seal_opt(token),
@@ -2158,7 +2235,7 @@ async def api_account_connect_start(
     config_dir = _new_account_config_dir(provider)
     acct = PooledAccount(
         provider=provider,
-        label=label or f"{provider}-{config_dir.rsplit('-', 1)[-1][:8]}",
+        label=label or _default_account_label(provider),
         owner_user_id=user.id,
         config_dir=config_dir,
         max_concurrent=int(body.get("max_concurrent") or 1),
@@ -2292,17 +2369,62 @@ async def api_account_check(
     user: User = Depends(_require_db_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Poll whether a connecting account finished sign-in."""
+    """Poll whether a connecting account finished sign-in.
+
+    Three outcomes, so the browser never sits on "waiting…" forever:
+    ``authenticated`` (creds on disk), ``failed`` (the CLI exited without
+    writing creds — expired/denied device code, or the CLI errored), and
+    ``pending`` (still waiting on the operator).
+    """
+    from backend.connect_manager import get_connect_manager
+
     acct = await db.get(PooledAccount, account_id)
     if not acct:
         return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+    mgr = get_connect_manager()
     if _account_authed(acct):
-        from backend.connect_manager import get_connect_manager
-
-        await get_connect_manager().finish(account_id)
+        await mgr.finish(account_id)
         await get_account_pool().reload()
         return JSONResponse({"ok": True, "status": "authenticated"})
-    return JSONResponse({"ok": True, "status": "pending"})
+    sess = mgr.status(account_id)
+    if sess and not sess.get("alive"):
+        return JSONResponse(
+            {
+                "ok": True,
+                "status": "failed",
+                "error": "Sign-in ended without writing credentials. "
+                "The code may have expired — start over.",
+                "detail": sess.get("tail", ""),
+            }
+        )
+    return JSONResponse(
+        {"ok": True, "status": "pending", "expires_in": (sess or {}).get("expires_in")}
+    )
+
+
+@app.post("/api/accounts/{account_id}/cancel")
+async def api_account_cancel(
+    account_id: int,
+    user: User = Depends(_require_db_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Abandon an in-progress sign-in: kill the CLI and drop the half-made row.
+
+    Closing the browser tab used to leave both behind — a `pending` account
+    nobody can finish, and a `claude setup-token` / `grok login` process running
+    on the server until the app restarted.
+    """
+    from backend.connect_manager import get_connect_manager
+
+    await get_connect_manager().finish(account_id)
+    acct = await db.get(PooledAccount, account_id)
+    if acct and not _account_authed(acct):
+        config_dir = acct.config_dir
+        await db.delete(acct)
+        await db.commit()
+        _rmtree_managed(config_dir)
+        await get_account_pool().reload()
+    return JSONResponse({"ok": True})
 
 
 @app.patch("/api/accounts/{account_id}")
@@ -2338,16 +2460,15 @@ async def api_account_delete(
     acct = await db.get(PooledAccount, account_id)
     if not acct:
         return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+    # Kill any live sign-in for this account first, or its CLI keeps running
+    # (and holding the config dir) after the row and directory are gone.
+    from backend.connect_manager import get_connect_manager
+
+    await get_connect_manager().finish(account_id)
     config_dir = acct.config_dir
     await db.delete(acct)
     await db.commit()
-    # Only remove directories under our managed roots (defense against bad data).
-    if config_dir and (
-        config_dir.startswith(CLAUDE_CONFIG_ROOT)
-        or config_dir.startswith(CODEX_CONFIG_ROOT)
-        or config_dir.startswith(GROK_CONFIG_ROOT)
-    ):
-        shutil.rmtree(config_dir, ignore_errors=True)
+    _rmtree_managed(config_dir)
     await get_account_pool().reload()
     return JSONResponse({"ok": True})
 
@@ -2434,6 +2555,11 @@ async def on_startup():
     # Subscribe to the challenge-event bus so that solver updates reflect into
     # the /team kanban (Task.status, flag, solver status).
     asyncio.create_task(_task_bus_subscriber(), name="team-bus-subscriber")
+    # Reap abandoned CLI sign-ins so `claude setup-token` / `codex login` /
+    # `grok login` never linger after the operator closes the tab.
+    from backend.connect_manager import get_connect_manager
+
+    asyncio.create_task(get_connect_manager().reap_loop(), name="connect-session-reaper")
 
 
 _RELEVANT_EVENT_TYPES = {

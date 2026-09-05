@@ -111,9 +111,16 @@ def openai_compat_config(pid: str) -> tuple[str, str] | None:
 
 
 def catalog_entries() -> list[dict]:
-    """Model-catalog rows contributed by the token providers (grok/kimi/antigravity)."""
+    """Model-catalog rows contributed by every provider that declares models.
+
+    Covers token providers (kimi/antigravity) *and* CLI ones (grok), so a
+    provider's model list lives in exactly one place. It used to iterate only
+    ``OPENAI_COMPAT_PROVIDERS``, which silently dropped Grok's models the moment
+    Grok became a CLI provider and forced a duplicate hardcoded list in
+    ``backend.models``.
+    """
     rows: list[dict] = []
-    for p in OPENAI_COMPAT_PROVIDERS.values():
+    for p in PROVIDERS.values():
         for m in p.models:
             rows.append({
                 "spec": f"{p.id}/{m}",
@@ -126,7 +133,7 @@ def catalog_entries() -> list[dict]:
 
 def vision_specs() -> set[str]:
     out: set[str] = set()
-    for p in OPENAI_COMPAT_PROVIDERS.values():
+    for p in PROVIDERS.values():
         for m in p.vision_models:
             out.add(m)
     return out

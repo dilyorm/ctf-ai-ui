@@ -74,18 +74,13 @@ ALL_MODELS: list[dict] = [
     {"spec": "copilot/o4-mini",         "label": "o4-mini (Copilot)",        "provider": "copilot", "provider_label": "GitHub Copilot"},
 ]
 
-# ── Subscription/token providers (Grok, Kimi, Antigravity) ──────────────────
-# Contributed by the provider registry. These are OpenAI-compatible; the exact
-# model IDs a subscription exposes are best confirmed via the accounts page's
-# "Verify & list models" (GET /v1/models), since provider model IDs change often.
+# ── Subscription providers (Grok, Kimi, Antigravity) ────────────────────────
+# Contributed by the provider registry — the single source of truth for their
+# model ids (Grok runs through the xAI CLI; Kimi/Antigravity are
+# OpenAI-compatible). For the token providers the exact ids a subscription
+# exposes are best confirmed via the accounts page's "Verify & list models"
+# (GET /v1/models), since provider model ids change often.
 ALL_MODELS.extend(catalog_entries())
-
-# ── Grok subscription (xAI CLI — driven by GrokSolver, not an API key) ──────
-ALL_MODELS.extend([
-    {"spec": "grok/grok-4.6",        "label": "Grok 4.6",            "provider": "grok", "provider_label": "Grok Subscription (xAI CLI)"},
-    {"spec": "grok/grok-build-0.1",  "label": "Grok Build (coding)", "provider": "grok", "provider_label": "Grok Subscription (xAI CLI)"},
-    {"spec": "grok/grok-4.5",        "label": "Grok 4.5",            "provider": "grok", "provider_label": "Grok Subscription (xAI CLI)"},
-])
 
 # Context window sizes (tokens). Keyed by model id (aliases included).
 CONTEXT_WINDOWS: dict[str, int] = {

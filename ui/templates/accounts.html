@@ -26,6 +26,14 @@
     #signin-modal { position:fixed; inset:0; background:rgba(0,0,0,.6); display:none; align-items:center; justify-content:center; z-index:50; }
     #signin-modal .modal-card { background:#161616; border:1px solid var(--border,#2a2a2a); border-radius:12px; padding:24px; width:min(520px,92vw); }
     .auth-url-box { background:#1a1a1a; border:1px solid var(--border,#2a2a2a); border-radius:8px; padding:10px; word-break:break-all; font-size:13px; margin:12px 0; }
+    .device-code { font-family:var(--mono,monospace); font-size:30px; letter-spacing:6px; font-weight:700; color:#eee; user-select:all; }
+    .steps { margin:14px 0 4px; padding-left:20px; color:var(--text3,#999); font-size:13px; line-height:1.9; }
+    .steps li[data-done="1"] { color:var(--green); }
+    .steps li[data-active="1"] { color:#eee; font-weight:600; }
+    .cli-tail { background:#111; border:1px solid var(--border,#2a2a2a); border-radius:8px; padding:10px;
+      font-family:var(--mono,monospace); font-size:12px; color:#c8c8c8; white-space:pre-wrap; max-height:140px; overflow:auto; margin-top:10px; }
+    .btn[disabled] { opacity:.45; cursor:not-allowed; }
+    .cap-warn { color:#e6b94a; font-size:12px; margin:-6px 0 12px; }
   </style>
 </head>
 <body class="page-body">
@@ -61,14 +69,15 @@
     <div id="alert" class="alert" style="display:none"></div>
 
     <div class="acct-actions">
-      <button class="btn btn-primary" onclick="connect('claude')">+ Claude</button>
-      <button class="btn btn-primary" onclick="connect('codex')">+ Codex</button>
-      <button class="btn btn-primary" onclick="connect('grok')">+ Grok</button>
+      <button class="btn btn-primary" id="btn-connect-claude" onclick="connect('claude')">+ Claude</button>
+      <button class="btn btn-primary" id="btn-connect-codex" onclick="connect('codex')">+ Codex</button>
+      <button class="btn btn-primary" id="btn-connect-grok" onclick="connect('grok')">+ Grok</button>
       <button class="btn btn-primary" onclick="connectCopilot()">+ Copilot</button>
       <button class="btn" onclick="connectToken('kimi')">+ Kimi</button>
       <button class="btn" onclick="connectToken('antigravity')">+ Antigravity</button>
       <button class="btn btn-ghost btn-sm" onclick="load()">Refresh</button>
     </div>
+    <div id="cap-warn" class="cap-warn" style="display:none"></div>
     <p class="page-desc" style="margin-top:-6px;font-size:12px;">
       <b>Claude, Codex, Grok</b> sign in with your subscription via their CLI — click, open the link,
       approve, done. Each account gets its own isolated config dir, so add as many as you like and the
@@ -95,22 +104,41 @@
     <div class="modal-card">
       <h3 id="modal-title">Connect account</h3>
       <p id="modal-msg" class="hint"></p>
+
+      <!-- Step list: keeps the flow legible once the user leaves for the OAuth tab -->
+      <ol id="modal-steps" class="steps" style="display:none">
+        <li data-step="open">Open the sign-in page (it opens in a new tab)</li>
+        <li data-step="approve">Approve there with the account you want to pool</li>
+        <li data-step="back">Come back to this tab — it finishes on its own</li>
+      </ol>
+
       <div id="modal-code" style="display:none; text-align:center; margin:16px 0">
-        <div style="font-family:var(--mono,monospace); font-size:30px; letter-spacing:6px; font-weight:700; color:#eee">—</div>
-        <a id="modal-code-link" href="https://github.com/login/device" target="_blank" rel="noopener" class="btn btn-primary btn-sm" style="margin-top:12px">Open github.com/login/device</a>
+        <div class="device-code" id="modal-code-value">—</div>
+        <div style="display:flex; gap:8px; justify-content:center; margin-top:12px; flex-wrap:wrap">
+          <button class="btn btn-sm" id="modal-code-copy" onclick="copyText(document.getElementById('modal-code-value').textContent, this)">Copy code</button>
+          <a id="modal-code-link" href="https://github.com/login/device" target="_blank" rel="noopener" class="btn btn-primary btn-sm">Open sign-in page</a>
+        </div>
       </div>
+
       <div id="modal-url" style="display:none">
         <div class="auth-url-box" id="modal-url-text"></div>
-        <a id="modal-url-link" href="#" target="_blank" rel="noopener" class="btn btn-primary btn-sm">Open sign-in page</a>
+        <div style="display:flex; gap:8px; flex-wrap:wrap">
+          <a id="modal-url-link" href="#" target="_blank" rel="noopener" class="btn btn-primary btn-sm">Open sign-in page</a>
+          <button class="btn btn-sm" id="modal-url-copy" onclick="copyText(document.getElementById('modal-url-text').textContent, this)">Copy link</button>
+        </div>
       </div>
-      <div id="modal-codeinput" style="display:none; margin-top:14px; display:none">
+
+      <div id="modal-codeinput" style="display:none; margin-top:14px">
         <input id="modal-code-field" placeholder="Paste authorization code here"
           style="width:100%; background:#1a1a1a; border:1px solid var(--border,#2a2a2a); color:#eee; border-radius:8px; padding:9px 11px; font-family:var(--mono,monospace)">
         <button class="btn btn-primary btn-sm" style="margin-top:10px" onclick="submitCode()">Submit code</button>
       </div>
+
       <p id="modal-status" class="hint" style="margin-top:14px"></p>
+      <pre id="modal-detail" class="cli-tail" style="display:none"></pre>
       <div style="margin-top:18px; display:flex; gap:8px; justify-content:flex-end">
-        <button class="btn btn-ghost btn-sm" onclick="closeModal()">Close</button>
+        <button class="btn btn-ghost btn-sm" id="modal-cancel" onclick="cancelConnect()">Cancel sign-in</button>
+        <button class="btn btn-sm" id="modal-close" onclick="closeModal()">Close</button>
       </div>
     </div>
   </div>
@@ -146,12 +174,13 @@
 
   <script>
     let pollTimer = null;
+    let expiryTimer = null;
     let listTimer = null;
     let copilotPolling = false;
+    let onReturnToTab = null;
 
     // ── Token providers (Grok / Kimi / Antigravity) ──────────────────
     const TOKEN_HELP = {
-      grok: { help: "Paste an xAI API key (SuperGrok / console.x.ai → API keys).", url: "https://console.x.ai" },
       kimi: { help: "Paste a Moonshot/Kimi key (platform.kimi.ai → API keys). Kimi Code subscription covers this.", url: "https://platform.kimi.ai/console/api-keys" },
       antigravity: { help: "Paste a Google AI (Gemini) API key from aistudio.google.com.", url: "https://aistudio.google.com/app/apikey" },
     };
@@ -236,17 +265,31 @@
     }
 
     async function load() {
-      const r = await fetch('/api/accounts');
-      const d = await r.json();
+      // The table refreshes every 5s. Re-rendering while someone is editing the
+      // concurrency field would throw away what they typed, so skip that tick.
       const tb = document.getElementById('acct-rows');
+      if (tb.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') return;
+      let d;
+      try {
+        const r = await fetch('/api/accounts');
+        d = await r.json();
+      } catch { return; }
       if (!d.accounts || !d.accounts.length) {
         tb.innerHTML = '<tr><td colspan="7" class="acct-empty">No accounts yet. Connect one above.</td></tr>';
         return;
       }
       tb.innerHTML = d.accounts.map(a => {
         const eta = a.status === 'cooling' ? coolEta(a.cooldown_until) : '';
+        const pending = a.status === 'pending';
         const statusCell = `<span class="badge badge-${a.status}">${a.status.replace('_',' ')}</span>`
-          + (eta ? ` <span class="cool-eta">${eta}</span>` : '');
+          + (eta ? ` <span class="cool-eta">${eta}</span>` : '')
+          + (pending ? ' <span class="cool-eta">sign-in never finished</span>' : '');
+        // A pending account has no credentials, so disable/concurrency are
+        // meaningless — offer the one action that helps: clear it out.
+        const actions = pending
+          ? `<button class="btn btn-sm btn-ghost" onclick="remove(${a.id})" style="color:#e66">Discard</button>`
+          : `<button class="btn btn-sm btn-ghost" onclick="toggle(${a.id}, ${a.disabled})">${a.disabled ? 'Enable' : 'Disable'}</button>
+             <button class="btn btn-sm btn-ghost" onclick="remove(${a.id})" style="color:#e66">Remove</button>`;
         return `<tr>
           <td><span class="prov-pill">${a.provider}</span></td>
           <td>${escapeHtml(a.label)}</td>
@@ -254,11 +297,8 @@
           <td>${statusCell}</td>
           <td>${a.active_leases}/${a.max_concurrent}</td>
           <td><input class="num-input" type="number" min="1" max="20" value="${a.max_concurrent}"
-                onchange="setMax(${a.id}, this.value)"></td>
-          <td style="white-space:nowrap">
-            <button class="btn btn-sm btn-ghost" onclick="toggle(${a.id}, ${a.disabled})">${a.disabled ? 'Enable' : 'Disable'}</button>
-            <button class="btn btn-sm btn-ghost" onclick="remove(${a.id})" style="color:#e66">Remove</button>
-          </td>
+                ${pending ? 'disabled' : ''} onchange="setMax(${a.id}, this.value)"></td>
+          <td style="white-space:nowrap">${actions}</td>
         </tr>`;
       }).join('');
     }
@@ -285,23 +325,100 @@
       load();
     }
 
+    // Stop every in-flight sign-in timer. Called before starting a new connect
+    // too — otherwise a second attempt left the first interval polling the old
+    // account id forever.
+    function stopPolling() {
+      copilotPolling = false;
+      if (pollTimer) { clearTimeout(pollTimer); clearInterval(pollTimer); pollTimer = null; }
+      if (expiryTimer) { clearInterval(expiryTimer); expiryTimer = null; }
+      onReturnToTab = null;
+    }
+
     function closeModal() {
+      stopPolling();
       document.getElementById('signin-modal').style.display = 'none';
       document.getElementById('modal-code').style.display = 'none';
       document.getElementById('modal-codeinput').style.display = 'none';
+      document.getElementById('modal-steps').style.display = 'none';
+      document.getElementById('modal-detail').style.display = 'none';
       connectId = null;
-      copilotPolling = false;
-      if (pollTimer) { clearTimeout(pollTimer); clearInterval(pollTimer); pollTimer = null; }
       load();
     }
 
+    // Abandon a half-finished sign-in: kills the CLI on the server and drops
+    // the pending row, so the pool never accumulates unusable accounts.
+    async function cancelConnect() {
+      const id = connectId;
+      stopPolling();
+      if (id) { try { await fetch(`/api/accounts/${id}/cancel`, { method: 'POST' }); } catch { /* best effort */ } }
+      closeModal();
+    }
+
+    async function copyText(text, btn) {
+      try {
+        await navigator.clipboard.writeText(text);
+        const was = btn.textContent;
+        btn.textContent = 'Copied';
+        setTimeout(() => { btn.textContent = was; }, 1500);
+      } catch { showAlert('Clipboard blocked — select the text and copy manually.', false); }
+    }
+
+    function setStep(name) {
+      const steps = document.getElementById('modal-steps');
+      steps.style.display = 'block';
+      const order = ['open', 'approve', 'back'];
+      const at = name === 'done' ? order.length : order.indexOf(name);
+      [...steps.children].forEach((li, i) => {
+        li.dataset.done = i < at ? '1' : '';
+        li.dataset.active = i === at ? '1' : '';
+      });
+    }
+
+    // ── Server capability preflight ───────────────────────────────────
+    // Claude/Codex/Grok connects shell out to their real CLI. If the binary
+    // isn't installed on this host the sign-in can only fail, so say that
+    // up front instead of after the operator clicks.
+    async function loadCapabilities() {
+      let caps;
+      try {
+        const r = await fetch('/api/accounts/capabilities');
+        const d = await r.json();
+        if (!d.ok) return;
+        caps = d.providers || {};
+      } catch { return; }
+      const missing = [];
+      for (const [prov, info] of Object.entries(caps)) {
+        const btn = document.getElementById('btn-connect-' + prov);
+        if (!btn) continue;
+        if (info.installed) {
+          btn.disabled = false;
+          btn.title = info.version ? `${prov} CLI: ${info.version}` : `${prov} CLI installed`;
+        } else {
+          btn.disabled = true;
+          btn.title = `${prov} CLI is not installed on the server`;
+          missing.push(`<b>${prov}</b> (install on the server: <code>${escapeHtml(info.install || '')}</code>)`);
+        }
+      }
+      const warn = document.getElementById('cap-warn');
+      if (missing.length) {
+        warn.innerHTML = '⚠ Not connectable — CLI missing on the server: ' + missing.join(' · ');
+        warn.style.display = 'block';
+      } else {
+        warn.style.display = 'none';
+      }
+    }
+
     async function connectCopilot() {
+      stopPolling();
       const modal = document.getElementById('signin-modal');
       const title = document.getElementById('modal-title');
       const msg = document.getElementById('modal-msg');
       const codeBox = document.getElementById('modal-code');
       const statusEl = document.getElementById('modal-status');
       document.getElementById('modal-url').style.display = 'none';
+      document.getElementById('modal-detail').style.display = 'none';
+      document.getElementById('modal-steps').style.display = 'none';
       title.textContent = 'Connect Copilot account';
       msg.textContent = 'Starting GitHub sign-in…';
       codeBox.style.display = 'none';
@@ -314,15 +431,18 @@
       const d = await r.json();
       if (!d.ok) { msg.textContent = d.error || 'Failed to start.'; return; }
 
-      msg.textContent = 'Enter this code at github.com/login/device, sign in with the Copilot (Student) account, then come back. Updates automatically.';
+      msg.textContent = 'Copy this code, open github.com/login/device, sign in with the Copilot account, then come back. Updates automatically.';
+      setStep('open');
       codeBox.style.display = 'block';
-      codeBox.querySelector('div').textContent = d.user_code;
+      document.getElementById('modal-code-value').textContent = d.user_code;
       document.getElementById('modal-code-link').href = d.verification_uri;
       statusEl.textContent = 'Waiting for GitHub authorization…';
 
       const id = d.account_id;
+      connectId = id;
       let intervalMs = Math.max(5, d.interval || 5) * 1000;
       copilotPolling = true;
+      onReturnToTab = () => { setStep('back'); };
       const tick = async () => {
         if (!copilotPolling) return;
         let cd;
@@ -332,7 +452,8 @@
         } catch { pollTimer = setTimeout(tick, intervalMs); return; }
         if (!cd.ok) { statusEl.textContent = cd.error || 'Error.'; copilotPolling = false; return; }
         if (cd.status === 'connected') {
-          copilotPolling = false;
+          stopPolling();
+          setStep('done');
           statusEl.textContent = 'Connected! Added to the pool.';
           showAlert('Copilot account connected.', true);
           load();
@@ -368,6 +489,7 @@
     }
 
     async function connect(provider) {
+      stopPolling();  // a previous attempt must not keep polling its own id
       const modal = document.getElementById('signin-modal');
       const title = document.getElementById('modal-title');
       const msg = document.getElementById('modal-msg');
@@ -375,56 +497,110 @@
       const codeInput = document.getElementById('modal-codeinput');
       const codeBox = document.getElementById('modal-code');
       const statusEl = document.getElementById('modal-status');
+      const detail = document.getElementById('modal-detail');
       title.textContent = `Connect ${provider} account`;
       msg.textContent = 'Starting sign-in…';
       urlBox.style.display = 'none';
       codeInput.style.display = 'none';
       codeBox.style.display = 'none';
+      detail.style.display = 'none';
+      document.getElementById('modal-steps').style.display = 'none';
       statusEl.textContent = '';
       connectId = null;
       modal.style.display = 'flex';
 
-      const r = await fetch(`/api/accounts/${provider}/start`, {
-        method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}',
-      });
-      const d = await r.json();
+      let d;
+      try {
+        const r = await fetch(`/api/accounts/${provider}/start`, {
+          method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}',
+        });
+        d = await r.json();
+      } catch {
+        msg.textContent = 'Network error starting sign-in.';
+        return;
+      }
       if (!d.ok) {
         msg.textContent = d.error || 'Failed to start sign-in.';
-        if (d.hint) statusEl.textContent = d.hint;
+        if (d.hint) { detail.textContent = d.hint; detail.style.display = 'block'; }
         return;
       }
       connectId = d.account_id;
+      setStep('open');
 
       if (d.user_code) {
-        // Codex device flow: show URL + one-time code, self-completes.
-        msg.textContent = 'Open the link, sign in, and enter this code. Updates automatically.';
+        // Device flow (Codex / Grok): show URL + one-time code, self-completes.
+        msg.textContent = 'Open the sign-in page, approve, and confirm this code. Copy it first — you will be on another tab.';
         codeBox.style.display = 'block';
-        codeBox.querySelector('div').textContent = d.user_code;
-        document.getElementById('modal-code-link').textContent = 'Open ' + d.auth_url;
+        document.getElementById('modal-code-value').textContent = d.user_code;
+        document.getElementById('modal-code-link').textContent = 'Open sign-in page';
         document.getElementById('modal-code-link').href = d.auth_url;
       } else if (d.auth_url) {
         msg.textContent = d.needs_code
-          ? 'Open this URL, authorize, copy the code Anthropic shows you, and paste it below.'
-          : 'Open this URL and sign in. Updates automatically.';
+          ? 'Open this URL, authorize, copy the code Anthropic shows you, then come back and paste it below.'
+          : 'Open this URL and sign in, then come back — this page finishes on its own.';
         urlBox.style.display = 'block';
         document.getElementById('modal-url-text').textContent = d.auth_url;
         document.getElementById('modal-url-link').href = d.auth_url;
         if (d.needs_code) codeInput.style.display = 'block';
       }
       statusEl.textContent = 'Waiting for sign-in to complete…';
-      pollTimer = setInterval(async () => {
-        const cr = await fetch(`/api/accounts/${connectId}/check`);
-        const cd = await cr.json();
+      startConnectPolling(connectId, statusEl, detail);
+    }
+
+    // Poll for completion. Browsers throttle timers in background tabs (Chrome
+    // drops them to ~1/min), so the OAuth round-trip used to leave this page
+    // stuck on "waiting" for up to a minute after the user came back. Re-check
+    // immediately on focus/visibility instead of waiting for the next tick.
+    function startConnectPolling(id, statusEl, detail) {
+      let expiresAt = 0;
+      const tick = async () => {
+        if (connectId !== id) return;
+        let cd;
+        try {
+          const cr = await fetch(`/api/accounts/${id}/check`);
+          cd = await cr.json();
+        } catch { return; }  // transient; the interval will retry
+        if (connectId !== id) return;
         if (cd.status === 'authenticated') {
-          clearInterval(pollTimer); pollTimer = null;
+          stopPolling();
+          setStep('done');
           statusEl.textContent = 'Connected! Added to the pool.';
           showAlert('Account connected.', true);
           load();
+          return;
         }
-      }, 3000);
+        if (cd.status === 'failed') {
+          stopPolling();
+          statusEl.textContent = cd.error || 'Sign-in failed.';
+          if (cd.detail) { detail.textContent = cd.detail; detail.style.display = 'block'; }
+          return;
+        }
+        if (cd.expires_in != null) expiresAt = Date.now() + cd.expires_in * 1000;
+      };
+      pollTimer = setInterval(tick, 3000);
+      expiryTimer = setInterval(() => {
+        if (!expiresAt || connectId !== id) return;
+        const left = Math.max(0, Math.round((expiresAt - Date.now()) / 1000));
+        if (statusEl.textContent.startsWith('Waiting')) {
+          statusEl.textContent = left
+            ? `Waiting for sign-in to complete… (code valid ${Math.floor(left / 60)}m ${left % 60}s)`
+            : 'Sign-in window expired. Cancel and start over.';
+        }
+      }, 1000);
+      // Coming back from the OAuth tab should feel instant.
+      onReturnToTab = () => { setStep('back'); tick(); };
+      tick();
     }
 
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        if (onReturnToTab && connectId) onReturnToTab();
+        else load();
+      }
+    });
+    window.addEventListener('focus', () => { if (onReturnToTab && connectId) onReturnToTab(); });
     load();
+    loadCapabilities();
     listTimer = setInterval(load, 5000);
   </script>
 </body>

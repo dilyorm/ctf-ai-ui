@@ -55,10 +55,12 @@ _CODEX_CODE = re.compile(r"\b[A-Z0-9]{4}-[A-Z0-9]{4,6}\b")
 # Grok device flow: prefer a URL that mentions device/auth/x.ai, else any https URL.
 _GROK_URL = re.compile(r"https://\S*(?:device|auth|x\.ai|grok)\S*", re.I)
 _AGY_URL = re.compile(r"https://accounts\.google\.com/o/oauth2/\S+")
-# `agy` draws its OAuth URL inside a box, so once newlines and padding are
-# stripped the match runs straight on into the border glyphs. Cut at the first
-# character that cannot appear in a URL.
+# Characters a URL may contain; anything else ends it (`agy` draws a box border
+# right after its URL).
 _URL_TAIL = re.compile(r"[^A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]")
+_URL_SAFE_LINE = re.compile(r"[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+\Z")
+# Box-drawing and padding a TUI puts around the URL.
+_BORDER = " \t─│┌┐└┘├┤┬┴┼═║█░▒▓"
 _ANY_URL = re.compile(r"https://\S+")
 
 # The CLIs report a rejected/expired authorization code on their own stdout and
@@ -93,6 +95,22 @@ class _Session:
     submitted_at: float = 0.0  # when a code was last written to stdin
     # Which URL a PTY session should scrape (claude's OAuth URL by default).
     url_re: re.Pattern = _CLAUDE_URL
+    # A wrapped URL arrives over several reads, so hold each candidate until it
+    # stops growing before publishing it — otherwise the browser gets the first
+    # line of the URL and the sign-in fails with a truncated request.
+    url_candidate: str = ""
+    url_settled_at: float = 0.0
+
+    def note_url_candidate(self, url: str) -> None:
+        if url and url != self.url_candidate:
+            self.url_candidate = url
+            self.url_settled_at = time.time()
+
+    def promote_url(self, quiet_for: float = 1.0) -> None:
+        if self.url or not self.url_candidate:
+            return
+        if time.time() - self.url_settled_at >= quiet_for:
+            self.url = self.url_candidate
 
     def error(self) -> str:
         """The CLI's own failure line, if it printed one after the last submit.
@@ -445,15 +463,7 @@ class ConnectManager:
             return
         sess.buffer += _ANSI.sub("", data.decode("utf-8", errors="replace"))
         if not sess.url:
-            # Both CLIs wrap the URL across terminal lines (and pad the
-            # continuation), so match against the text with newlines and spaces
-            # removed, then cut at the first character a URL can't contain —
-            # `agy` draws a box border immediately after its URL.
-            m = sess.url_re.search(sess.buffer.replace("\n", "").replace(" ", ""))
-            if m:
-                url = m.group(0)
-                cut = _URL_TAIL.search(url)
-                sess.url = url[: cut.start()] if cut else url
+            sess.note_url_candidate(scrape_url(sess.buffer, sess.url_re))
 
     async def _read_codex(self, account_id: int) -> None:
         await self._read_device(account_id, _CODEX_URL)
@@ -471,9 +481,9 @@ class ConnectManager:
                 text = _ANSI.sub("", line.decode("utf-8", errors="replace"))
                 sess.buffer += text
                 if not sess.url:
-                    m = url_re.search(text) or url_re.search(sess.buffer) or _ANY_URL.search(sess.buffer)
-                    if m:
-                        sess.url = m.group(0)
+                    sess.note_url_candidate(
+                        scrape_url(sess.buffer, url_re) or scrape_url(sess.buffer, _ANY_URL)
+                    )
                 if not sess.user_code:
                     m = _CODEX_CODE.search(text)
                     if m:
@@ -494,11 +504,16 @@ class ConnectManager:
             sess = self._sessions.get(account_id)
             if not sess:
                 return ""
+            if field == "url":
+                sess.promote_url()
             val = getattr(sess, field, "")
             if val:
                 return val
             await asyncio.sleep(0.2)
         sess = self._sessions.get(account_id)
+        if sess and field == "url":
+            # Out of time: publish whatever we have rather than nothing.
+            sess.promote_url(quiet_for=0.0)
         return getattr(sess, field, "") if sess else ""
 
     def _prune(self) -> None:
@@ -518,6 +533,36 @@ class ConnectManager:
             await asyncio.sleep(interval)
             with contextlib.suppress(Exception):
                 self._prune()
+
+
+def scrape_url(text: str, url_re: re.Pattern) -> str:
+    """Pull a sign-in URL out of TUI output, re-joining terminal line wraps.
+
+    A terminal hard-wraps a long URL with no space at the break, and a boxed
+    layout pads the continuation and draws a border after it. Naively stripping
+    every newline and space fixes the wrap but also glues on whatever the CLI
+    prints next; matching a single line instead truncates the URL mid-parameter.
+
+    So: match on one line, then absorb following lines only while they look like
+    wrap continuations — nothing but URL characters, with no interior spaces.
+    Real prose ("Paste code here if prompted >") always has spaces, and a border
+    line is empty once its glyphs are stripped.
+    """
+    lines = [ln.strip(_BORDER) for ln in text.splitlines()]
+    for i, line in enumerate(lines):
+        m = url_re.search(line)
+        if not m:
+            continue
+        url = m.group(0)
+        cut = _URL_TAIL.search(url)
+        if cut:
+            url = url[: cut.start()]
+        for nxt in lines[i + 1:]:
+            if not nxt or not _URL_SAFE_LINE.fullmatch(nxt):
+                break
+            url += nxt
+        return url
+    return ""
 
 
 def agy_env(config_dir: str) -> dict[str, str]:
@@ -567,7 +612,9 @@ async def agy_models(config_dir: str, timeout: float = 60.0) -> tuple[bool, list
         return False, [], "agy models timed out"
     text = _ANSI.sub("", (out or b"").decode("utf-8", "replace"))
     if proc.returncode != 0:
-        line = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+        rows = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        # "Fetching available models..." is printed first; the failure is below.
+        line = next((r for r in rows if "error" in r.lower()), rows[-1] if rows else "")
         return False, [], line or f"agy models exited {proc.returncode}"
     models = []
     for raw in text.splitlines():

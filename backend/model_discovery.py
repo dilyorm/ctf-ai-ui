@@ -135,7 +135,9 @@ async def models_for(provider: str, *, refresh: bool = False) -> list[str]:
     return models
 
 
-async def auto_model_specs(*, max_challenges: int = 1) -> list[str]:
+async def auto_model_specs(
+    *, max_challenges: int = 1, coordinator_provider: str = ""
+) -> list[str]:
     """Models for a run, chosen from the connected subscriptions.
 
     Every challenge runs *every* selected model, so the selection size is a
@@ -158,7 +160,17 @@ async def auto_model_specs(*, max_challenges: int = 1) -> list[str]:
         prefix = _SPEC_PREFIX[provider]
         ranked[provider] = [f"{prefix}/{m}" for m in await models_for(provider)]
 
-    total_seats = sum(max(pool.free(p), 1) for p in providers)
+    # The coordinator holds a seat on its own provider for the whole run, so it
+    # is not available to solvers. Counting it produced a selection larger than
+    # the pool could ever run, which the run plan then reported as "0 challenges
+    # can run at once".
+    def seats(provider: str) -> int:
+        free = pool.free(provider)
+        if provider == coordinator_provider:
+            free -= 1
+        return max(free, 0)
+
+    total_seats = sum(seats(p) for p in providers)
     budget = max(1, total_seats // max(1, max_challenges))
 
     # Round-robin by strength: one model from each provider before a second

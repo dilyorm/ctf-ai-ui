@@ -1298,6 +1298,9 @@ async def api_run_start(
     # subscription actually offers. Connecting an account is then the only
     # configuration a run needs — no model page to visit, and no stale spec to
     # leave a run stuck on one provider.
+    # Needed by auto model selection below (the coordinator holds a seat on its
+    # own provider), so resolve it before that runs.
+    coordinator_backend = (body.get("coordinator") or "claude").strip()
     auto_models = not model_specs
     if auto_models:
         from backend.account_pool import get_account_pool
@@ -1307,7 +1310,10 @@ async def api_run_start(
             await get_account_pool().reload()
             # Size the selection to the seat budget for the requested
             # parallelism — every challenge runs every selected model.
-            model_specs = await auto_model_specs(max_challenges=max_concurrent)
+            model_specs = await auto_model_specs(
+                max_challenges=max_concurrent,
+                coordinator_provider=coordinator_backend,
+            )
         except Exception as e:
             logger.warning("Auto model selection failed: %s", e)
         if not model_specs:
@@ -1320,7 +1326,6 @@ async def api_run_start(
             exclude_list.extend(p.strip() for p in line.split(",") if p.strip())
     exclude_rx = (st.exclude_challenge_regex.strip() if st else None) or None
 
-    coordinator_backend = (body.get("coordinator") or "claude").strip()
     coordinator_model = body.get("coordinator_model") or None
     no_submit = bool(body.get("no_submit"))
 

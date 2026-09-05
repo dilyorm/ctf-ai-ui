@@ -70,6 +70,20 @@ def build_deps(
                 deps.challenge_dirs[meta.name] = str(d)
                 deps.challenge_metas[meta.name] = meta
 
+    # Hand the live deps to the run manager so operator controls (concurrency)
+    # reach a coordinator that is already running, instead of only taking effect
+    # on the next run.
+    try:
+        from backend.run_manager import get_run_manager
+
+        get_run_manager().bind_deps(deps)
+    except Exception as e:  # pragma: no cover — never block a run on this
+        logger.debug("Could not bind deps to the run manager: %s", e)
+
+    logger.info(
+        "Coordinator deps ready: %d model spec(s), max %d challenge(s) in parallel",
+        len(specs), deps.max_concurrent_challenges,
+    )
     return ctfd, cost_tracker, deps
 
 

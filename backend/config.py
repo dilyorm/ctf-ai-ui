@@ -57,6 +57,10 @@ class Settings(BaseSettings):
     # Infra
     sandbox_image: str = "ctf-sandbox"
     max_concurrent_challenges: int = 10
+    # Parallel solver sessions allowed on a subscription that is NOT in the
+    # account pool (the server's own CLI login). Pooled accounts use their own
+    # per-account `max_concurrent` instead.
+    ambient_solver_concurrency: int = 1
     max_attempts_per_challenge: int = 3
     container_memory_limit: str = "16g"
 

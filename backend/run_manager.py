@@ -45,6 +45,8 @@ class GlobalRunManager:
         self._coordinator_account: str | None = None
         self._coordinator_note: str | None = None
         self._max_concurrent: int = 10
+        # Set while a coordinator is running, so live control changes apply.
+        self._live_deps = None
         # Per-challenge runtime controls (names are challenge slugs/display names)
         self.stopped_challenges: set[str] = set()
         self.priority_challenges: set[str] = set()
@@ -84,8 +86,38 @@ class GlobalRunManager:
         return {"ok": True, "priority": True, "name": name}
 
     def set_max_concurrent(self, n: int) -> dict:
+        """Change how many challenges may have swarms at once.
+
+        This used to update a field that only `status()` read, so changing the
+        number during a run silently did nothing — the coordinator kept the
+        value it started with. Push it into the live coordinator deps too.
+        """
         self._max_concurrent = max(1, min(n, 50))
-        return {"ok": True, "max_concurrent": self._max_concurrent}
+        applied_live = False
+        deps = self._live_deps
+        if deps is not None:
+            deps.max_concurrent_challenges = self._max_concurrent
+            applied_live = True
+        return {
+            "ok": True,
+            "max_concurrent": self._max_concurrent,
+            "applied_to_running_coordinator": applied_live,
+        }
+
+    def bind_deps(self, deps) -> None:
+        """Register the running coordinator's deps so live controls reach it.
+
+        Only for a run this manager started: the CLI builds deps too, and must
+        keep its own --max-challenges rather than inherit this default.
+        """
+        if not (self._task and not self._task.done()):
+            return
+        self._live_deps = deps
+        deps.max_concurrent_challenges = self._max_concurrent
+        logger.info(
+            "Live controls bound to the coordinator (max %d challenge(s) in parallel)",
+            self._max_concurrent,
+        )
 
     def toggle_exclude(self, name: str) -> dict:
         """Toggle excluded state for a specific challenge.
@@ -199,6 +231,7 @@ class GlobalRunManager:
                     if lease is not None:
                         await pool.release(lease)
                     self._coordinator_account = None
+                    self._live_deps = None
 
             self._task = asyncio.create_task(_runner(), name="global-ctf-run")
             return {"ok": True}

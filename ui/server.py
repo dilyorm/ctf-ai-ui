@@ -68,6 +68,26 @@ from ui.github_auth import (
     generate_state,
 )
 
+def _configure_logging() -> None:
+    """Set up logging however the app was started.
+
+    `run()` is only used by `python -m ui.server`; production runs
+    `uvicorn ui.server:app` directly, so configuring inside run() left the root
+    logger at WARNING and hid every backend INFO message — which is why a run's
+    pool decisions were invisible in the journal.
+    """
+    level = os.environ.get("LOG_LEVEL", "INFO").upper()
+    logging.basicConfig(
+        level=getattr(logging, level, logging.INFO),
+        format="[%(asctime)s] %(levelname)-8s %(name)s: %(message)s",
+        datefmt="%X",
+    )
+    for noisy in ("httpx", "httpcore", "botocore", "urllib3", "aiodocker"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
+
+_configure_logging()
+
 logger = logging.getLogger(__name__)
 
 
@@ -2770,11 +2790,6 @@ register_team_routes(app, templates)
 
 
 def run():
-    logging.basicConfig(
-        level=logging.INFO,
-        format="[%(asctime)s] %(levelname)-8s %(message)s",
-        datefmt="%X",
-    )
     uvicorn.run("ui.server:app", host=UI_HOST, port=UI_PORT, reload=False, log_level="info")
 
 

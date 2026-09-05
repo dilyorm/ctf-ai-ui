@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 from backend.account_pool import (
     Lease,
+    ambient_slot,
     get_account_pool,
     parse_cooldown_seconds,
     pool_provider_for_spec,
@@ -388,6 +389,24 @@ class ChallengeSwarm:
         pool = get_account_pool()
         use_pool = bool(pool_provider) and pool.has_accounts(pool_provider)
 
+        # Without a pooled account the solver runs on the server's own CLI login
+        # — one subscription seat. Nothing used to bound that, so every solver of
+        # every swarm could hammer a single subscription at once. Hold a slot for
+        # the whole run, mirroring what a pooled account's `max_concurrent` does.
+        slot = None
+        if not use_pool and pool_provider:
+            slot = ambient_slot(
+                pool_provider,
+                getattr(self.settings, "ambient_solver_concurrency", None),
+            )
+        if slot is not None:
+            if slot.locked():
+                logger.info(
+                    f"[{self.meta.name}/{model_spec}] Waiting for the shared "
+                    f"'{pool_provider}' subscription (no pooled account connected)"
+                )
+            await slot.acquire()
+
         lease: Lease | None = None
         if use_pool:
             lease = await pool.lease(pool_provider)
@@ -398,6 +417,8 @@ class ChallengeSwarm:
                 logger.info(
                     f"[{self.meta.name}/{model_spec}] Parked — no '{pool_provider}' account available"
                 )
+                if slot is not None:
+                    slot.release()
                 return SolverResult(
                     flag=None, status=PARKED, findings_summary="parked: no account available",
                     step_count=0, cost_usd=0.0, log_path="",
@@ -423,6 +444,8 @@ class ChallengeSwarm:
         finally:
             if lease is not None:
                 await get_account_pool().release(lease)
+            if slot is not None:
+                slot.release()
             await solver.stop()
 
     async def _run_solver_loop(

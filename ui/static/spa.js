@@ -432,6 +432,19 @@
     }
   }
   $("#btnStart").onclick = runStart; $("#btnStop").onclick = runStop;
+  // Changing the number mid-run now reaches the running coordinator, so let it.
+  $("#runConc").onchange = async () => {
+    if (!state.run.running) return;
+    const n = parseInt($("#runConc").value) || 10;
+    const r = await api("/api/run/concurrency", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ max_concurrent: n }) });
+    if (r.data.ok) {
+      toast(r.data.applied_to_running_coordinator
+        ? `Now up to ${r.data.max_concurrent} challenge(s) in parallel.`
+        : `Saved — applies to the next run.`);
+    }
+    refreshRun();
+  };
 
   // ---------- loaders ----------
   async function loadCtfs() { const r = await api("/api/ctfs"); state.ctfs = r.data.ctfs || [];

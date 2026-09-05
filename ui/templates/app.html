@@ -353,7 +353,7 @@ select, input, textarea{ font-family:inherit; }
       <div class="runbar">
         <span class="label">Run</span>
         <select id="runCtf"><option value="">select a CTF…</option></select>
-        <label class="inl">conc <input id="runConc" type="number" min="1" max="30" value="10" style="width:52px;background:var(--bg);border:1px solid var(--border2);color:var(--text);border-radius:6px;padding:5px 7px"></label>
+        <label class="inl" title="How many challenges may have a swarm at once. Each challenge runs one solver per enabled model, so the number of live agent sessions is this times your model count.">challenges <input id="runConc" type="number" min="1" max="30" value="10" style="width:52px;background:var(--bg);border:1px solid var(--border2);color:var(--text);border-radius:6px;padding:5px 7px"></label>
         <label class="inl"><input type="checkbox" id="runDry"> dry run</label>
         <div class="sp"></div>
         <button class="btn primary" id="btnStart">▶ Start run</button>

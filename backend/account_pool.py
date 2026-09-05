@@ -46,6 +46,36 @@ _SPEC_PROVIDER_TO_POOL = {
     "antigravity": "antigravity",
 }
 
+# Subscription-backed providers: one seat, shared by everything that runs on it.
+# When none of these is connected to the pool, solvers fall back to the server's
+# ambient CLI login — which used to mean *no* concurrency limit at all, so a
+# single subscription could be driven by every solver of every swarm at once.
+_SUBSCRIPTION_PROVIDERS = frozenset({"claude", "codex", "grok", "antigravity"})
+
+# Default parallel sessions allowed on that ambient login. One, to match what a
+# pooled account gets by default and what "per one task" means to an operator.
+AMBIENT_CONCURRENCY_DEFAULT = 1
+
+_ambient_slots: dict[str, asyncio.Semaphore] = {}
+_ambient_limits: dict[str, int] = {}
+
+
+def ambient_slot(provider: str, limit: int | None = None) -> asyncio.Semaphore | None:
+    """Concurrency guard for a provider used *without* a pooled account.
+
+    Returns None for providers billed per token (API keys), where parallelism is
+    a cost decision rather than a seat limit.
+    """
+    if provider not in _SUBSCRIPTION_PROVIDERS:
+        return None
+    want = max(1, limit if limit is not None else AMBIENT_CONCURRENCY_DEFAULT)
+    if _ambient_limits.get(provider) != want:
+        # Rebuild when the operator changes the limit between runs.
+        _ambient_slots[provider] = asyncio.Semaphore(want)
+        _ambient_limits[provider] = want
+    return _ambient_slots[provider]
+
+
 # Token-based pool providers store their credential in secret_enc (not a config dir).
 from backend.providers import TOKEN_POOL_PROVIDERS as _TOKEN_PROVIDERS  # noqa: E402
 

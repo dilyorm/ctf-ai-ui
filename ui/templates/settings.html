@@ -117,7 +117,7 @@
             <div class="provider-icon provider-openai" style="background:#0f766e;">C</div>
             <div>
               <h3>Codex Subscription (ChatGPT account)</h3>
-              <p class="hint">Used for <code>codex/o3</code>, <code>codex/o4-mini</code>, <code>codex/gpt-4.1</code> — no API key needed.</p>
+              <p class="hint">Used for <code>codex/*</code> models (see Models tab) — no API key needed.</p><p class="hint" style="margin-top:6px;color:#e6b94a">Personal fallback only — this sign-in is <b>not</b> added to the shared account pool. To pool a subscription the whole team rotates through, connect it on <a href="/accounts" style="color:var(--accent)">Accounts</a>.</p>
             </div>
             <span class="key-status {% if cfg.codex_config_dir %}connected{% endif %}" id="codex-sub-status-badge">
               {% if cfg.codex_config_dir %}Connected{% else %}Not connected{% endif %}
@@ -220,7 +220,7 @@
             <div class="provider-icon provider-claude">♦</div>
             <div>
               <h3>Claude Subscription (Claude Code CLI)</h3>
-              <p class="hint">Used for <code>claude-sdk/*</code> models. Sign in with your Claude account — no API key needed.</p>
+              <p class="hint">Used for <code>claude-sdk/*</code> models. Sign in with your Claude account — no API key needed.</p><p class="hint" style="margin-top:6px;color:#e6b94a">Personal fallback only — this sign-in is <b>not</b> added to the shared account pool. To pool a subscription the whole team rotates through, connect it on <a href="/accounts" style="color:var(--accent)">Accounts</a>.</p>
             </div>
             <span class="key-status {% if cfg.claude_config_dir %}connected{% endif %}" id="claude-status-badge">
               {% if cfg.claude_config_dir %}Connected{% else %}Not connected{% endif %}

@@ -242,15 +242,29 @@ class ConnectManager:
 
     # ── internals ──────────────────────────────────────────────────────────
 
+    def _detach_reader(self, sess: _Session) -> None:
+        """Stop watching a PTY whose child has exited, and mark the session dead."""
+        sess.exited = True
+        if sess.master_fd is None:
+            return
+        with contextlib.suppress(Exception):
+            asyncio.get_running_loop().remove_reader(sess.master_fd)
+
     def _on_pty_read(self, account_id: int) -> None:
         sess = self._sessions.get(account_id)
         if not sess or sess.master_fd is None:
             return
         try:
             data = os.read(sess.master_fd, 4096)
-        except (OSError, BlockingIOError):
+        except BlockingIOError:
+            return
+        except OSError:
+            # The slave side closed (EIO): the CLI is gone. Drop the reader or
+            # the fd stays permanently readable and spins the event loop.
+            self._detach_reader(sess)
             return
         if not data:
+            self._detach_reader(sess)
             return
         sess.buffer += _ANSI.sub("", data.decode("utf-8", errors="replace"))
         if not sess.url:

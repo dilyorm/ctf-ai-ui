@@ -2388,13 +2388,17 @@ async def api_account_check(
         return JSONResponse({"ok": True, "status": "authenticated"})
     sess = mgr.status(account_id)
     if sess and sess.get("error"):
-        # The CLI printed a failure and (for Claude) is parked on a retry
-        # prompt. Say so instead of leaving the browser on "finishing sign-in…".
+        # The CLI printed a failure. Say so instead of leaving the browser on
+        # "finishing sign-in…" forever.
+        error = sess["error"]
+        if "400" in error:
+            # The only thing a 400 on the code exchange ever means in practice.
+            error += " — the code was already used, expired, or came from a different sign-in link."
         return JSONResponse(
             {
                 "ok": True,
                 "status": "failed",
-                "error": sess["error"],
+                "error": error,
                 "detail": sess.get("tail", ""),
                 "can_retry": sess.get("can_retry", False),
             }

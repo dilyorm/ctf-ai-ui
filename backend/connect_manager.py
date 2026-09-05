@@ -89,13 +89,13 @@ class _Session:
         for line in reversed(self.buffer.splitlines()):
             stripped = line.strip()
             low = stripped.lower()
-            for marker in _ERROR_MARKERS:
-                at = low.find(marker)
-                if at >= 0:
-                    # The failure is often echoed onto the prompt line
-                    # ("Paste code here if prompted > Login failed: ..."), so
-                    # start at the marker rather than the start of the line.
-                    return stripped[at:][:200]
+            hits = [at for m in _ERROR_MARKERS if (at := low.find(m)) >= 0]
+            if hits:
+                # The failure is often echoed onto the prompt line ("Paste code
+                # here if prompted > Login failed: ..."), so start at the
+                # earliest marker — that keeps the CLI's whole message rather
+                # than a fragment of it.
+                return stripped[min(hits):][:200]
         return ""
 
     def at_retry_prompt(self) -> bool:

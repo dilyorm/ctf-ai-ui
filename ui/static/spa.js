@@ -88,8 +88,23 @@
       case "agent_intervention": state.interventions.unshift(d); if (state.interventions.length > 200) state.interventions.pop();
         pushEvent("op", d.actor, d.model && d.model !== "coordinator" ? `→ ${d.challenge}/${modelShort(d.model)}: ${d.text || d.action}` : (d.text || d.action)); break;
     }
+    // The server reconciles kanban Task rows from these events, so the board's
+    // data changes on the server — a local redraw would show the same cards.
+    if (state.screen === "board" &&
+        ["challenge_new", "challenge_update", "challenge_started",
+         "challenge_solved", "challenge_failed"].includes(evt.type)) {
+      scheduleBoardReload();
+    }
     scheduleRender();
   }
+
+  // Several challenge events can arrive together; fetch once for the burst.
+  let boardReloadTimer = null;
+  function scheduleBoardReload() {
+    if (boardReloadTimer) return;
+    boardReloadTimer = setTimeout(() => { boardReloadTimer = null; loadBoard(); }, 500);
+  }
+
   function upsert(d) { const n = d.name; if (!n) return; const ex = state.challenges[n] || { name: n, models: {} }; state.challenges[n] = Object.assign(ex, d); }
   function pushEvent(cls, who, msg) { const now = new Date(); state.events.unshift({ cls, who, msg, t: `${pad(now.getUTCHours())}:${pad(now.getUTCMinutes())}:${pad(now.getUTCSeconds())}` }); if (state.events.length > 60) state.events.pop(); }
 
@@ -108,6 +123,7 @@
     $$(".rail-btn").forEach(b => b.classList.toggle("active", b.dataset.nav === name));
     $("#screenName").textContent = NAMES[name][0];
     renderScreen(name); updateTopbar(); $(".main").scrollTop = 0;
+    if (name === "board") loadBoard();
   }
   function updateTopbar() {
     $("#crumb").textContent = NAMES[state.screen][1]();
@@ -374,11 +390,27 @@
 
   // ---------- BOARD ----------
   const STATUS_COLS = [["todo", "To Do"], ["in_progress", "In Progress"], ["blocked", "Blocked"], ["needs_review", "Needs Review"], ["solved", "Solved"], ["skipped", "Skipped"]];
+  // Fetch the board's tasks, then draw. `renderScreen` calls renderBoard() on
+  // every event tick, so drawing must not depend on a fetch completing.
   async function loadBoard() {
-    const sel = $("#boardCtf"); const id = sel.value; const board = $("#board");
-    if (!id) { board.innerHTML = '<div class="empty">Select a CTF to load its board.</div>'; return; }
+    const sel = $("#boardCtf");
+    // Default to whatever CTF the run bar is pointed at, so opening Kanban
+    // shows something instead of an empty "select a CTF" pane.
+    if (!sel.value && $("#runCtf") && $("#runCtf").value) sel.value = $("#runCtf").value;
+    const id = sel.value;
+    if (!id) { state.tasks = []; renderBoard(); return; }
     const r = await api(`/api/team/tasks?ctf_id=${id}`);
     state.tasks = r.data.tasks || [];
+    renderBoard();
+  }
+
+  function renderBoard() {
+    const board = $("#board");
+    if (!board) return;
+    if (!$("#boardCtf").value) {
+      board.innerHTML = '<div class="empty">Select a CTF to load its board.</div>';
+      return;
+    }
     board.innerHTML = STATUS_COLS.map(([key, title]) => {
       const items = state.tasks.filter(t => (t.status || "todo") === key);
       const cards = items.map(t => `<div class="card"><div class="cn">${esc(t.name)}</div><div class="cc">
@@ -490,7 +522,7 @@
     if (!reduce) setInterval(() => { const n = new Date(); $("#clock").textContent = `${pad(n.getUTCHours())}:${pad(n.getUTCMinutes())} UTC`; }, 15000);
     { const n = new Date(); $("#clock").textContent = `${pad(n.getUTCHours())}:${pad(n.getUTCMinutes())} UTC`; }
     connectWS(); loadCtfs(); loadTeam(); loadStatus(); refreshRun();
-    setInterval(() => { loadTeam(); refreshRun(); }, 8000);
+    setInterval(() => { loadTeam(); refreshRun(); if (state.screen === "board") loadBoard(); }, 8000);
     setInterval(() => { if (!state.ws) loadStatus(); }, 10000);
     go("command");
   }

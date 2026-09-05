@@ -1305,7 +1305,9 @@ async def api_run_start(
 
         try:
             await get_account_pool().reload()
-            model_specs = await auto_model_specs()
+            # Size the selection to the seat budget for the requested
+            # parallelism — every challenge runs every selected model.
+            model_specs = await auto_model_specs(max_challenges=max_concurrent)
         except Exception as e:
             logger.warning("Auto model selection failed: %s", e)
         if not model_specs:

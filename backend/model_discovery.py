@@ -135,22 +135,43 @@ async def models_for(provider: str, *, refresh: bool = False) -> list[str]:
     return models
 
 
-async def auto_model_specs(*, per_provider: int = 1) -> list[str]:
-    """One model spec per connected subscription, strongest first.
+async def auto_model_specs(*, max_challenges: int = 1) -> list[str]:
+    """Models for a run, chosen from the connected subscriptions.
 
-    This is what a run uses when the operator hasn't picked models: connecting
-    an account is the only configuration needed, and every connected
-    subscription contributes its best model.
+    Every challenge runs *every* selected model, so the selection size is a
+    divisor of parallelism: five subscriptions each contributing their best
+    model means five seats per challenge, and one challenge at a time. Size the
+    set to the seat budget instead — total free seats divided by the challenges
+    the operator wants running — and spread it across providers, so two
+    challenges land on different subscriptions rather than queueing on one.
+
+    Connecting an account is then the only configuration a run needs; the two
+    limits that matter (per-account Max, challenges in parallel) do the rest.
     """
     pool = get_account_pool()
+    providers = [p for p in pool.connected_providers() if _SPEC_PREFIX.get(p)]
+    if not providers:
+        return []
+
+    ranked: dict[str, list[str]] = {}
+    for provider in providers:
+        prefix = _SPEC_PREFIX[provider]
+        ranked[provider] = [f"{prefix}/{m}" for m in await models_for(provider)]
+
+    total_seats = sum(max(pool.free(p), 1) for p in providers)
+    budget = max(1, total_seats // max(1, max_challenges))
+
+    # Round-robin by strength: one model from each provider before a second
+    # from any, so the set stays spread even when it is smaller than the
+    # number of connected subscriptions.
     specs: list[str] = []
-    for provider in pool.connected_providers():
-        prefix = _SPEC_PREFIX.get(provider)
-        if not prefix:
-            continue
-        models = await models_for(provider)
-        for model_id in models[: max(1, per_provider)]:
-            specs.append(f"{prefix}/{model_id}")
+    for depth in range(max(len(v) for v in ranked.values())):
+        for provider in providers:
+            if len(specs) >= budget:
+                return specs
+            options = ranked[provider]
+            if depth < len(options):
+                specs.append(options[depth])
     return specs
 
 

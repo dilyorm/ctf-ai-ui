@@ -118,3 +118,32 @@ async def test_results_are_cached(env, monkeypatch):
     await models_for("grok")
     await models_for("grok")
     assert len(calls) == 1, "the CLI should be asked once per TTL"
+
+
+async def test_auto_sizes_the_selection_to_the_seat_budget(env):
+    """Every challenge runs every model, so the set size caps parallelism.
+
+    Five subscriptions each contributing their best model means five seats per
+    challenge — one challenge at a time. Asking for two challenges must pick a
+    smaller set.
+    """
+    env({"antigravity", "grok", "claude", "codex"})  # FakePool: 1 free seat each
+
+    for_one = await auto_model_specs(max_challenges=1)
+    for_two = await auto_model_specs(max_challenges=2)
+    for_four = await auto_model_specs(max_challenges=4)
+
+    assert len(for_one) == 4
+    assert len(for_two) == 2
+    assert len(for_four) == 1
+    # Never zero, however tight the budget.
+    assert len(await auto_model_specs(max_challenges=99)) == 1
+
+
+async def test_auto_spreads_across_providers_before_doubling_up(env):
+    """Two challenges on two subscriptions run together; on one they queue."""
+    env({"antigravity", "grok", "claude", "codex"})
+    specs = await auto_model_specs(max_challenges=2)
+
+    providers = [s.split("/")[0] for s in specs]
+    assert len(set(providers)) == len(providers), f"doubled up on a provider: {specs}"

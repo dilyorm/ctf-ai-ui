@@ -87,9 +87,15 @@ class _Session:
         if not self.submitted_at:
             return ""
         for line in reversed(self.buffer.splitlines()):
-            low = line.strip().lower()
-            if any(m in low for m in _ERROR_MARKERS):
-                return line.strip()[:200]
+            stripped = line.strip()
+            low = stripped.lower()
+            for marker in _ERROR_MARKERS:
+                at = low.find(marker)
+                if at >= 0:
+                    # The failure is often echoed onto the prompt line
+                    # ("Paste code here if prompted > Login failed: ..."), so
+                    # start at the marker rather than the start of the line.
+                    return stripped[at:][:200]
         return ""
 
     def at_retry_prompt(self) -> bool:

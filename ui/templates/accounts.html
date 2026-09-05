@@ -147,6 +147,7 @@
       <p id="modal-status" class="hint" style="margin-top:14px"></p>
       <pre id="modal-detail" class="cli-tail" style="display:none"></pre>
       <div style="margin-top:18px; display:flex; gap:8px; justify-content:flex-end">
+        <button class="btn btn-primary btn-sm" id="modal-retry" style="display:none" onclick="retryConnect()">Try again</button>
         <button class="btn btn-ghost btn-sm" id="modal-cancel" onclick="cancelConnect()">Cancel sign-in</button>
         <button class="btn btn-sm" id="modal-close" onclick="closeModal()">Close</button>
       </div>
@@ -359,10 +360,15 @@
 
     // Abandon a half-finished sign-in: kills the CLI on the server and drops
     // the pending row, so the pool never accumulates unusable accounts.
-    async function cancelConnect() {
+    async function abandonSession() {
       const id = connectId;
       stopPolling();
+      connectId = null;
       if (id) { try { await fetch(`/api/accounts/${id}/cancel`, { method: 'POST' }); } catch { /* best effort */ } }
+    }
+
+    async function cancelConnect() {
+      await abandonSession();
       closeModal();
     }
 
@@ -507,8 +513,18 @@
       if (!pollTimer) startConnectPolling(connectId, statusEl, detail);
     }
 
+    let lastProvider = null;
+    async function retryConnect() {
+      const provider = lastProvider;
+      if (!provider) return;
+      await abandonSession();  // drop the dead session + its pending row
+      connect(provider);       // …and start a clean one without closing the modal
+    }
+
     async function connect(provider) {
+      lastProvider = provider;
       stopPolling();  // a previous attempt must not keep polling its own id
+      document.getElementById('modal-retry').style.display = 'none';
       const modal = document.getElementById('signin-modal');
       const title = document.getElementById('modal-title');
       const msg = document.getElementById('modal-msg');
@@ -590,16 +606,21 @@
         }
         if (cd.status === 'failed') {
           stopPolling();
-          statusEl.textContent = cd.can_retry
-            ? `${cd.error} — paste a fresh code below and submit again.`
-            : (cd.error || 'Sign-in failed.');
-          if (cd.detail) { detail.textContent = cd.detail; detail.style.display = 'block'; }
           if (cd.can_retry) {
-            // Codes are single-use: send the operator back for a new one.
+            // The CLI is still parked on its own retry prompt: re-paste in place.
+            statusEl.textContent = `${cd.error} — paste a fresh code below and submit again.`;
             document.getElementById('modal-codeinput').style.display = 'block';
             document.getElementById('modal-code-field').value = '';
             setStep('open');
+          } else {
+            // The CLI exited. Authorization codes are single-use, so recovery is
+            // a fresh sign-in with a new link, not another paste.
+            statusEl.textContent = `${cd.error || 'Sign-in failed.'} Codes work once — start a new sign-in to get a fresh link.`;
+            document.getElementById('modal-codeinput').style.display = 'none';
+            document.getElementById('modal-steps').style.display = 'none';
+            document.getElementById('modal-retry').style.display = 'inline-flex';
           }
+          if (cd.detail) { detail.textContent = cd.detail; detail.style.display = 'block'; }
           return;
         }
         if (cd.expires_in != null) expiresAt = Date.now() + cd.expires_in * 1000;

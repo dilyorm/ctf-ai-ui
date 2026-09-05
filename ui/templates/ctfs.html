@@ -92,12 +92,20 @@
             <option value="manual">Manual — add challenges by hand, submit flags yourself</option>
             <option value="ctfd">CTFd</option>
             <option value="rctf">rCTF</option>
+            <option value="tfc">The Few Chosen (ctf.thefewchosen.com)</option>
             <option value="generic">Any platform (auto-detect &amp; connect)</option>
           </select>
         </div>
         <div class="form-group">
           <label>URL <span class="required">*</span></label>
           <input type="url" id="new-ctf-url" placeholder="https://ctf.example.com" />
+        </div>
+        <div class="form-group" id="new-ctf-login-group" style="display:none">
+          <label>Username <span class="required">*</span></label>
+          <input type="text" id="new-ctf-user" placeholder="your platform username" autocomplete="off" />
+          <label style="margin-top:8px">Password <span class="required">*</span></label>
+          <input type="password" id="new-ctf-pass" placeholder="your platform password" autocomplete="new-password" />
+          <span class="field-hint">The Few Chosen issues 10-minute access tokens, so the agent signs in itself and renews them as it runs.</span>
         </div>
         <div class="form-group">
           <label>API Token</label>
@@ -152,6 +160,8 @@
     nameInput.value = "";
     urlInput.value = "";
     tokenInput.value = "";
+    document.getElementById("new-ctf-user").value = "";
+    document.getElementById("new-ctf-pass").value = "";
     platformInput.value = "ctfd";
     document.getElementById("new-ctf-apibase").value = "/api/v1";
     platformInput.dispatchEvent(new Event("change"));
@@ -171,8 +181,15 @@
     const url = urlInput.value.trim();
     const token = tokenInput.value.trim();
     const manual = platformInput.value === "manual";
+    const ctfdUser = document.getElementById("new-ctf-user").value.trim();
+    const ctfdPass = document.getElementById("new-ctf-pass").value;
     if (!name || (!url && !manual)) {
       errBox.textContent = manual ? "Name is required." : "Name and URL are required.";
+      errBox.style.display = "block";
+      return;
+    }
+    if (platformInput.value === "tfc" && !(ctfdUser && ctfdPass)) {
+      errBox.textContent = "The Few Chosen needs a username and password.";
       errBox.style.display = "block";
       return;
     }
@@ -187,6 +204,8 @@
           platform: platformInput.value || "ctfd",
           ctfd_url: url || (platformInput.value === "manual" ? "manual://local" : ""),
           ctfd_token: token,
+          ctfd_user: ctfdUser,
+          ctfd_pass: ctfdPass,
           api_base: (document.getElementById("new-ctf-apibase").value.trim() || "/api/v1"),
         }),
       });
@@ -221,7 +240,11 @@
     const hint = document.getElementById("new-ctf-token-hint");
     const generic = platformInput.value === "generic";
     const manual = platformInput.value === "manual";
-    apibaseGroup.style.display = (generic || manual) ? "none" : "block";
+    const tfc = platformInput.value === "tfc";
+    apibaseGroup.style.display = (generic || manual || tfc) ? "none" : "block";
+    // TFC signs in with a username/password; its tokens are too short-lived to store.
+    document.getElementById("new-ctf-login-group").style.display = tfc ? "block" : "none";
+    if (tfc && !urlInput.value.trim()) urlInput.value = "https://ctf.thefewchosen.com";
     contextGroup.style.display = generic ? "block" : "none";
     connectorPanel.style.display = "none";
     connectorPanel.querySelector("#connector-chat").innerHTML = "";
@@ -232,8 +255,11 @@
     const urlGroup = urlInput.closest(".form-group");
     const tokenGroup = tokenInput.closest(".form-group");
     if (urlGroup) urlGroup.style.display = manual ? "none" : "block";
-    if (tokenGroup) tokenGroup.style.display = manual ? "none" : "block";
+    // TFC authenticates with the login below, so it has no token to paste.
+    if (tokenGroup) tokenGroup.style.display = (manual || tfc) ? "none" : "block";
     if (manual) {
+      hint.textContent = "";
+    } else if (tfc) {
       hint.textContent = "";
     } else if (platformInput.value === "rctf") {
       hint.textContent = "rCTF: copy the team login token from your profile page (Authorization: Bearer …).";
@@ -465,6 +491,7 @@
     }
     .platform-ctfd { background: rgba(95,145,255,.15); color: #5f91ff; }
     .platform-rctf { background: rgba(255,170,64,.18); color: #ffaa40; }
+    .platform-tfc { background: rgba(224,205,85,.18); color: #e0cd55; }
     .platform-generic { background: color-mix(in oklab, var(--accent) 18%, transparent); color: var(--accent); }
     #connector-panel { border-top: 1px solid var(--border); margin-top: 8px; padding-top: 12px; }
   </style>

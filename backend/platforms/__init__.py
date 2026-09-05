@@ -18,7 +18,7 @@ from typing import Any
 from backend.platforms.base import PlatformClient
 from backend.platforms.rctf import RCTFClient
 
-SUPPORTED_PLATFORMS = ("ctfd", "rctf", "generic", "manual")
+SUPPORTED_PLATFORMS = ("ctfd", "rctf", "tfc", "generic", "manual")
 
 
 def make_platform_client(
@@ -68,6 +68,18 @@ def make_platform_client(
 
     if p == "rctf":
         return RCTFClient(base_url=base_url, token=token)
+
+    if p == "tfc":
+        # The Few Chosen mints 10-minute JWTs, so it needs the login itself
+        # rather than a long-lived token.
+        from backend.platforms.tfc import TFCClient
+
+        return TFCClient(
+            base_url=base_url or "https://ctf.thefewchosen.com",
+            username=username,
+            password=password,
+            token=token,
+        )
 
     # default to CTFd — importing here avoids a circular-ish coupling.
     from backend.ctfd import CTFdClient

@@ -268,10 +268,18 @@ async def api_team_sync_tasks(
 
     token = open_opt(ctf.ctfd_token_enc) or ""
     platform = ctf.platform or "ctfd"
+    creds: dict[str, str] = {}
+    if getattr(ctf, "ctfd_user", ""):
+        creds["username"] = ctf.ctfd_user
+        creds["password"] = open_opt(getattr(ctf, "ctfd_pass_enc", b"")) or ""
     client = make_platform_client(
         platform=platform,
         base_url=ctf.ctfd_url,
         token=token,
+        api_base=getattr(ctf, "api_base", "/api/v1") or "/api/v1",
+        adapter=getattr(ctf, "adapter_json", "") or "",
+        ctf_id=ctf.id,
+        **creds,
     )
     try:
         # fetch_all_challenges pulls per-challenge detail (description, solves, files)

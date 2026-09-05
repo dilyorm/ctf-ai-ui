@@ -869,6 +869,9 @@ async def api_create_ctf(
     name = (body.get("name") or "").strip()
     ctfd_url = (body.get("ctfd_url") or body.get("url") or "").strip()
     ctfd_token = (body.get("ctfd_token") or body.get("token") or "").strip()
+    # Login credentials, for platforms whose tokens are too short-lived to store.
+    ctfd_user = (body.get("ctfd_user") or body.get("username") or "").strip()
+    ctfd_pass = body.get("ctfd_pass") or body.get("password") or ""
     platform = (body.get("platform") or "ctfd").strip().lower()
     api_base = (body.get("api_base") or "/api/v1").strip() or "/api/v1"
     if not api_base.startswith("/"):
@@ -915,8 +918,21 @@ async def api_create_ctf(
             {"ok": False, "error": "CTF with this name already exists"}, status_code=409
         )
 
+    # The Few Chosen issues 10-minute access tokens, so it can only be driven by
+    # re-authenticating; a stored token would be dead before the first solve.
+    if platform == "tfc" and not (ctfd_user and ctfd_pass):
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "The Few Chosen needs a username and password "
+                "(its access tokens expire after 10 minutes).",
+            },
+            status_code=400,
+        )
+
     try:
         token_enc = seal_opt(ctfd_token)
+        pass_enc = seal_opt(ctfd_pass)
     except Exception as e:
         return JSONResponse(
             {"ok": False, "error": str(e), "hint": "Set APP_SECRET_KEY."}, status_code=500
@@ -928,6 +944,8 @@ async def api_create_ctf(
         platform=platform,
         ctfd_url=ctfd_url,
         ctfd_token_enc=token_enc,
+        ctfd_user=ctfd_user,
+        ctfd_pass_enc=pass_enc,
         api_base=api_base,
         adapter_json=adapter_json,
     )
@@ -1261,6 +1279,11 @@ async def api_run_start(
             token = open_opt(ctf_row.ctfd_token_enc)
             if token:
                 settings.ctfd_token = token
+            # Platforms that re-authenticate themselves (tfc) need the login,
+            # not a token that would expire mid-run.
+            if getattr(ctf_row, "ctfd_user", ""):
+                settings.ctfd_user = ctf_row.ctfd_user
+                settings.ctfd_pass = open_opt(getattr(ctf_row, "ctfd_pass_enc", b"")) or ""
         elif st:
             if st.ctfd_url:
                 settings.ctfd_url = st.ctfd_url

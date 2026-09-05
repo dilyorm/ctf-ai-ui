@@ -107,6 +107,35 @@ class _Prober:
             self._note(f"GET {path} failed: {e}")
             return None
 
+    async def detect_tfc(self) -> ProbeResult | None:
+        """The Few Chosen: a separate ``api.`` host serving ``/challenge``.
+
+        The API answers unauthenticated requests with 401, which is itself the
+        signal — a stock CTFd/rCTF has nothing at that path on that host.
+        """
+        from backend.platforms.tfc import derive_endpoints
+
+        api_url, _, _ = derive_endpoints(self.base_url)
+        try:
+            resp = await self.client.get(f"{api_url}/challenge", timeout=20.0)
+        except Exception as e:
+            self._note(f"TFC probe of {api_url} failed: {e}")
+            return None
+        if resp.status_code not in (200, 401, 403):
+            return None
+        if resp.status_code == 200:
+            try:
+                body = resp.json()
+            except Exception:
+                return None
+            if not (isinstance(body, dict) and "challenges" in body and "difficulties" in body):
+                return None
+        elif "application/json" not in resp.headers.get("content-type", ""):
+            return None
+        self._note(f"The Few Chosen API detected at {api_url} (HTTP {resp.status_code})")
+        # No adapter spec: TFC has a dedicated client, driven by a login.
+        return ProbeResult("tfc", 0.9, None, [], self.log)
+
     async def detect_ctfd(self) -> ProbeResult | None:
         for api_base in ("/api/v1", "/public-api"):
             headers = {"Authorization": f"Token {self.token}"} if self.token else {}
@@ -287,12 +316,21 @@ async def probe_platform(
         if hint == "rctf":
             return ProbeResult("rctf", 1.0, rctf_adapter(), [], ["Forced rCTF adapter."])
 
+        if hint == "tfc":
+            return ProbeResult("tfc", 1.0, None, [], ["Forced The Few Chosen adapter."])
+
         if hint in ("auto", "ctfd"):
             res = await prober.detect_ctfd()
             if res:
                 return res
         if hint in ("auto", "rctf"):
             res = await prober.detect_rctf()
+            if res:
+                return res
+        # Checked last: it resolves a sibling ``api.`` host, which costs a DNS
+        # lookup that stock CTFd/rCTF sites would pay for nothing.
+        if hint == "auto":
+            res = await prober.detect_tfc()
             if res:
                 return res
         return await prober.discover_generic()

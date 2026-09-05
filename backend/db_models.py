@@ -189,10 +189,14 @@ class CTF(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
 
     name: Mapped[str] = mapped_column(String(200))
-    # "ctfd" | "rctf" | "generic"
+    # "ctfd" | "rctf" | "tfc" | "generic" | "manual"
     platform: Mapped[str] = mapped_column(String(16), default="ctfd")
     ctfd_url: Mapped[str] = mapped_column(String(500))
     ctfd_token_enc: Mapped[bytes] = mapped_column(LargeBinary, default=b"")
+    # Login credentials, for platforms that issue only short-lived tokens and
+    # so must re-authenticate themselves (The Few Chosen mints 10-minute JWTs).
+    ctfd_user: Mapped[str] = mapped_column(String(200), default="")
+    ctfd_pass_enc: Mapped[bytes] = mapped_column(LargeBinary, default=b"")
     # CTFd API mount point (standard "/api/v1"; SAS CTF uses "/public-api")
     api_base: Mapped[str] = mapped_column(String(64), default="/api/v1")
     # Generic-platform adapter spec (JSON) — how to list/submit on an arbitrary

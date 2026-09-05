@@ -147,6 +147,7 @@ class GlobalRunManager:
         no_submit: bool = False,
         coordinator_backend: str = "claude",
         coordinator_model: str | None = None,
+        auto_models: bool = False,
         msg_port: int = 0,
     ) -> dict:
         async with self._lock:
@@ -176,6 +177,7 @@ class GlobalRunManager:
                     ambient_concurrency=getattr(settings, "ambient_solver_concurrency", 1),
                 )
                 self._plan = plan.as_dict()
+                self._plan["auto_models"] = auto_models
                 # Unknown specs would fail per-solver at run time; drop them here.
                 if plan.model_specs:
                     model_specs = plan.model_specs

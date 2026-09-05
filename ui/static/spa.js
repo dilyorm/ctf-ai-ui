@@ -455,8 +455,9 @@
       const models = plan.model_specs || [];
       const seats = Object.entries(plan.solver_capacity || {})
         .map(([p, n]) => `${p} ×${n}`).join(", ");
+      const lead = plan.auto_models ? "Auto — coordinator picking from" : "Solving with";
       rows.push({ cls: "", html: models.length
-        ? `Solving with <span class="who">${models.map(esc).join(", ")}</span>`
+        ? `${lead} <span class="who">${models.map(esc).join(", ")}</span>`
           + (seats ? ` · seats: <span class="who">${esc(seats)}</span>` : "")
         : "No usable model selected." });
       (plan.warnings || []).forEach(w => rows.push({ cls: "warn", html: esc(w) }));

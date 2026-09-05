@@ -250,6 +250,28 @@ class AccountPool:
             total += max(0, max(1, a.max_concurrent) - a.active_leases)
         return total
 
+    def config_dir_for(self, provider: str) -> str:
+        """Any connected account's config dir for *provider*, for CLI queries.
+
+        Used to ask a provider's CLI what models it can actually run, without
+        taking a lease (the query is read-only and takes a second).
+        """
+        for a in self._accounts.values():
+            # A "<provider>:<uuid>" config_dir is the placeholder a token
+            # account carries; only a real directory can drive the CLI.
+            if (
+                a.provider == provider
+                and not a.disabled
+                and a.config_dir
+                and not a.config_dir.startswith(f"{provider}:")
+            ):
+                return a.config_dir
+        return ""
+
+    def connected_providers(self) -> list[str]:
+        """Providers with at least one usable connected account."""
+        return sorted({a.provider for a in self._accounts.values() if not a.disabled})
+
     def has_accounts(self, provider: str) -> bool:
         return any(a.provider == provider and not a.disabled for a in self._accounts.values())
 

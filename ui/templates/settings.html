@@ -264,8 +264,15 @@
     <!-- ── Tab: Models ───────────────────────────────────────────────── -->
     <div class="tab-panel" id="tab-models">
       <p class="tab-desc">
-        Pick which models race against each challenge. Each ticked model = one solver instance per challenge.
-        Untick to reduce parallelism; tick more (or different providers) to add diversity.
+        <b>Optional.</b> Leave everything unticked and the coordinator picks for you — it uses the
+        strongest model each connected subscription offers, sees how many solver seats each has free,
+        and chooses per challenge. Set your limits on
+        <a href="/accounts" style="color:var(--accent)">Accounts</a> (Max per subscription) and in the
+        run bar (challenges in parallel); that is all a run needs.
+      </p>
+      <p class="tab-desc" style="margin-top:-6px">
+        Tick models only to override that. Each ticked model = one solver instance <em>per challenge</em>,
+        so ticking four means each challenge consumes four subscription seats.
       </p>
 
       <!-- Live tally (updated by JS as you toggle) -->

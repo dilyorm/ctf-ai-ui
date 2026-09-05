@@ -616,13 +616,16 @@ async def agy_models(config_dir: str, timeout: float = 60.0) -> tuple[bool, list
         # "Fetching available models..." is printed first; the failure is below.
         line = next((r for r in rows if "error" in r.lower()), rows[-1] if rows else "")
         return False, [], line or f"agy models exited {proc.returncode}"
+    # Rows are "<id>	<Human Label>", after a "Fetching available models..." line.
     models = []
     for raw in text.splitlines():
-        line = raw.strip().lstrip("-*• ").strip()
-        # Model rows are the bare ids; skip headings and decoration.
-        if line and " " not in line and "/" not in line and not line.endswith(":"):
-            models.append(line)
-    return True, sorted(set(models)), ""
+        line = raw.rstrip()
+        if "	" not in line:
+            continue
+        model_id = line.split("	", 1)[0].strip().lstrip("-*• ").strip()
+        if model_id and " " not in model_id:
+            models.append(model_id)
+    return True, models, ""
 
 
 def _which(binary: str) -> str:

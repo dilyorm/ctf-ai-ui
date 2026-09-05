@@ -89,8 +89,23 @@ PROVIDERS: dict[str, Provider] = {
         openai_base_url="https://generativelanguage.googleapis.com/v1beta/openai",
         token_help="Sign in with the Google account that has Antigravity access, or paste a Gemini API key from aistudio.google.com.",
         token_url="https://aistudio.google.com/app/apikey",
-        models=("gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-2.5-pro"),
-        vision_models=("gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-2.5-pro"),
+        # Fallback list only — the live set comes from `agy models` on the
+        # connected account (see backend.model_discovery). The previous entries
+        # (gemini-3-pro-preview / gemini-3-flash-preview / gemini-2.5-pro) were
+        # guesses and none of them exist.
+        models=(
+            "gemini-3.8-flash-high", "gemini-3.8-flash-medium", "gemini-3.8-flash-low",
+            "gemini-3.7-flash-high", "gemini-3.7-flash-medium", "gemini-3.7-flash-low",
+            "gemini-3.6-flash-high", "gemini-3.6-flash-medium", "gemini-3.6-flash-low",
+            "gemini-3.1-pro-high", "gemini-3.1-pro-low",
+            "claude-opus-4-6-thinking", "claude-sonnet-4-6", "gpt-oss-120b-medium",
+        ),
+        vision_models=(
+            "gemini-3.8-flash-high", "gemini-3.8-flash-medium", "gemini-3.8-flash-low",
+            "gemini-3.7-flash-high", "gemini-3.7-flash-medium", "gemini-3.7-flash-low",
+            "gemini-3.6-flash-high", "gemini-3.6-flash-medium", "gemini-3.6-flash-low",
+            "gemini-3.1-pro-high", "gemini-3.1-pro-low",
+        ),
     ),
 }
 

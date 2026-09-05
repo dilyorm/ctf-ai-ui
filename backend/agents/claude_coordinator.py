@@ -23,6 +23,7 @@ from backend.agents.coordinator_core import (
     do_fetch_challenges,
     do_get_solve_status,
     do_kill_swarm,
+    do_list_models,
     do_read_solver_trace,
     do_spawn_swarm,
     do_submit_flag,
@@ -42,6 +43,22 @@ Strategy:
 - Use read_solver_trace to monitor what each solver is doing and where it's stuck
 - When agents are stuck, read their traces, then craft targeted bumps with specific technical guidance
 - Use broadcast to share cross-solver insights (e.g. flag format discovery, shared vulnerabilities)
+
+CHOOSING MODELS — this is yours to decide:
+- Call list_models first. It shows every model each connected subscription can run,
+  strongest first, and how many solver SEATS each provider has free right now.
+- A seat is one running solver. Spending 3 seats on one challenge means fewer
+  challenges run in parallel. Spend deliberately.
+- Pass model_specs to spawn_swarm to pick per challenge. Omit it to use the run's
+  default selection.
+- Match the model to the work: the strongest models for pwn, rev and crypto;
+  cheaper/faster ones for recon, forensics, misc and low-solve-count triage.
+- Spread across providers. Two challenges on two different subscriptions run at the
+  same time; two on the same one queue behind each other.
+- If a provider's solvers keep failing or its seats are exhausted, spawn the next
+  challenge on a different provider instead of waiting.
+- If a challenge resists one model, re-spawn it with a different one — a fresh model
+  often breaks a deadlock that bumping cannot.
 
 CRITICAL RULES:
 - NEVER kill a swarm. Solvers will keep trying indefinitely with different approaches.
@@ -76,9 +93,26 @@ def _build_coordinator_mcp(deps: CoordinatorDeps):
     async def get_solve_status(args: dict) -> dict:
         return _text(await do_get_solve_status(deps))
 
-    @tool("spawn_swarm", "Launch all solver models on a challenge.", {"challenge_name": str})
+    @tool(
+        "spawn_swarm",
+        "Launch solvers on a challenge. Omit model_specs to use the run's "
+        "default selection, or pass a list to choose models for this challenge "
+        "(see list_models for what is available and how many seats are free).",
+        {"challenge_name": str, "model_specs": list},
+    )
     async def spawn_swarm(args: dict) -> dict:
-        return _text(await do_spawn_swarm(deps, args["challenge_name"]))
+        return _text(
+            await do_spawn_swarm(deps, args["challenge_name"], args.get("model_specs"))
+        )
+
+    @tool(
+        "list_models",
+        "List the models each connected subscription can run right now, "
+        "strongest first, with how many solver seats each has free.",
+        {},
+    )
+    async def list_models(args: dict) -> dict:
+        return _text(await do_list_models(deps))
 
     @tool("check_swarm_status", "Get per-agent progress for a swarm.", {"challenge_name": str})
     async def check_swarm_status(args: dict) -> dict:
@@ -129,6 +163,7 @@ def _build_coordinator_mcp(deps: CoordinatorDeps):
             fetch_challenges,
             get_solve_status,
             spawn_swarm,
+            list_models,
             check_swarm_status,
             submit_flag,
             kill_swarm,
@@ -172,6 +207,7 @@ async def run_claude_coordinator(
         "mcp__coordinator__fetch_challenges",
         "mcp__coordinator__get_solve_status",
         "mcp__coordinator__spawn_swarm",
+        "mcp__coordinator__list_models",
         "mcp__coordinator__check_swarm_status",
         "mcp__coordinator__submit_flag",
         "mcp__coordinator__kill_swarm",

@@ -1288,17 +1288,28 @@ async def api_run_start(
         .scalars()
         .all()
     )
-    if prefs_rows:
-        model_specs = [r.model_spec for r in prefs_rows if r.enabled]
-    else:
-        model_specs = list(DEFAULT_MODELS)
+    model_specs = [r.model_spec for r in prefs_rows if r.enabled] if prefs_rows else []
 
     # Body can override model specs
     if isinstance(body.get("model_specs"), list):
         model_specs = [s for s in body["model_specs"] if isinstance(s, str)]
 
-    if not model_specs:
-        model_specs = list(DEFAULT_MODELS)
+    # Auto: with nothing selected, use the strongest model each connected
+    # subscription actually offers. Connecting an account is then the only
+    # configuration a run needs — no model page to visit, and no stale spec to
+    # leave a run stuck on one provider.
+    auto_models = not model_specs
+    if auto_models:
+        from backend.account_pool import get_account_pool
+        from backend.model_discovery import auto_model_specs
+
+        try:
+            await get_account_pool().reload()
+            model_specs = await auto_model_specs()
+        except Exception as e:
+            logger.warning("Auto model selection failed: %s", e)
+        if not model_specs:
+            model_specs = list(DEFAULT_MODELS)
 
     # Exclusions from user settings
     exclude_list: list[str] = []
@@ -1321,6 +1332,7 @@ async def api_run_start(
         no_submit=no_submit,
         coordinator_backend=coordinator_backend,
         coordinator_model=coordinator_model,
+        auto_models=auto_models,
         # Use a stable port so the UI can always reach the operator endpoint
         # even when running out-of-process from the coordinator.
         msg_port=int(body.get("msg_port") or os.environ.get("MSG_PORT", "9400")),

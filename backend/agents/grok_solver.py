@@ -6,9 +6,9 @@ the Docker sandbox** so its autonomous tool calls execute against the challenge
 in isolation with the CTF toolchain, and mount the leased ``GROK_HOME`` (the
 account's isolated credentials) read-only.
 
-Verified command shape (docs.x.ai): ``grok -p "<prompt>" --always-approve
---output-format text -m <model>`` runs one prompt to completion, non-interactive,
-auto-approving tool calls. The flag is read from the model's final output
+Verified against grok 1.0.13 on the host: ``grok -p "<prompt>" --always-approve
+--output-format plain -m <model>`` runs one prompt to completion,
+non-interactive, auto-approving tool calls. The flag is read from the model's final output
 (``FLAG: <flag>``) and submitted through the swarm's deduped ``submit_fn``.
 
 Requires the `grok` binary inside the sandbox image (see sandbox/Dockerfile.sandbox).
@@ -141,7 +141,9 @@ class GrokSolver:
         cmd = (
             "export PATH=/root/.grok/bin:/root/.local/bin:$PATH; "
             f"cd /challenge && GROK_HOME={_CREDS} XAI_API_KEY= "
-            f"grok -p {shlex.quote(instruction)} --always-approve --output-format text {model_flag}"
+            # `--output-format` takes plain|json|streaming-json|streaming-messages-json.
+            # "text" is rejected with exit code 2, which failed every Grok solver.
+            f"grok -p {shlex.quote(instruction)} --always-approve --output-format plain {model_flag}"
         )
 
         if self.cancel_event.is_set():

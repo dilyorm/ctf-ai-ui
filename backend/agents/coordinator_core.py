@@ -37,7 +37,39 @@ async def do_get_solve_status(deps: CoordinatorDeps) -> str:
     return json.dumps({"solved": sorted(solved), "active_swarms": swarm_status}, indent=2)
 
 
-async def do_spawn_swarm(deps: CoordinatorDeps, challenge_name: str) -> str:
+async def do_list_models(deps: CoordinatorDeps) -> str:
+    """Live models per connected subscription, with free seats — for the LLM."""
+    from backend.account_pool import get_account_pool
+    from backend.model_discovery import catalog_by_provider
+
+    pool = get_account_pool()
+    try:
+        catalog = await catalog_by_provider()
+    except Exception as e:  # noqa: BLE001
+        return f"Could not list models: {e}"
+    if not catalog:
+        return (
+            "No subscription is connected, so only the run's default models are "
+            "available: " + ", ".join(deps.model_specs)
+        )
+    lines = ["Models you can spawn, strongest first per subscription.",
+             "Seats = solvers that provider can run at once right now.", ""]
+    for provider, specs in catalog.items():
+        lines.append(f"{provider} — {pool.free(provider)} seat(s) free")
+        for spec in specs[:8]:
+            lines.append(f"  {spec}")
+    lines.append("")
+    lines.append(f"This run's default selection: {', '.join(deps.model_specs)}")
+    lines.append(
+        "Pass model_specs to spawn_swarm to choose per challenge. Spending more "
+        "seats on one challenge means fewer challenges run at once."
+    )
+    return "\n".join(lines)
+
+
+async def do_spawn_swarm(
+    deps: CoordinatorDeps, challenge_name: str, model_specs: list[str] | None = None
+) -> str:
     if getattr(deps, "excluded_challenges", set()):
         # Support a regex exclusion marker used by the coordinator loop.
         for item in deps.excluded_challenges:
@@ -79,13 +111,17 @@ async def do_spawn_swarm(deps: CoordinatorDeps, challenge_name: str) -> str:
 
     from backend.agents.swarm import ChallengeSwarm
 
+    # The coordinator may pick models per challenge (harder challenge, stronger
+    # model; a provider that is rate-limited, a different one). Anything it asks
+    # for that isn't in the catalog is ignored rather than failing the spawn.
+    chosen = [s for s in (model_specs or []) if s] or deps.model_specs
     swarm = ChallengeSwarm(
         challenge_dir=deps.challenge_dirs[challenge_name],
         meta=deps.challenge_metas[challenge_name],
         ctfd=deps.ctfd,
         cost_tracker=deps.cost_tracker,
         settings=deps.settings,
-        model_specs=deps.model_specs,
+        model_specs=chosen,
         no_submit=deps.no_submit,
         coordinator_inbox=deps.coordinator_inbox,
     )
@@ -121,7 +157,7 @@ async def do_spawn_swarm(deps: CoordinatorDeps, challenge_name: str) -> str:
 
     task = asyncio.create_task(_run_and_cleanup(), name=f"swarm-{challenge_name}")
     deps.swarm_tasks[challenge_name] = task
-    return f"Swarm spawned for {challenge_name} with {len(deps.model_specs)} models"
+    return f"Swarm spawned for {challenge_name} with {len(chosen)} model(s): {', '.join(chosen)}"
 
 
 async def do_check_swarm_status(deps: CoordinatorDeps, challenge_name: str) -> str:

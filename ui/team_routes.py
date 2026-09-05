@@ -22,11 +22,18 @@ from __future__ import annotations
 import datetime as dt
 import json as _json
 import logging
+import os as _os
+import re
 import uuid as _uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    StreamingResponse,
+)
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -43,10 +50,25 @@ router = APIRouter()
 
 STATUS_VALUES = ("todo", "in_progress", "blocked", "needs_review", "solved", "skipped")
 ASSIGNEE_TYPES = ("user", "ai")
-import os as _os
+
+
+def _attachment_cap_mb() -> int:
+    """Per-file upload cap in MB from ATTACHMENT_MAX_MB, sanitized.
+
+    Rejects non-numeric / <=0 values and clamps to a ceiling so a typo can't
+    disable the limit or let one upload exhaust memory (Postgres bytea tops out
+    near 1 GB anyway).
+    """
+    try:
+        mb = int(_os.environ.get("ATTACHMENT_MAX_MB", "512"))
+    except (TypeError, ValueError):
+        mb = 512
+    return max(1, min(mb, 1024))
+
+
 # CTF distfiles get big (binaries, pcaps, disk images). Cap generously;
 # override with ATTACHMENT_MAX_MB. nginx client_max_body_size must be >= this.
-MAX_ATTACHMENT_BYTES = int(_os.environ.get('ATTACHMENT_MAX_MB', '512')) * 1024 * 1024
+MAX_ATTACHMENT_BYTES = _attachment_cap_mb() * 1024 * 1024
 
 
 def _normalize_description(raw: str, platform: str) -> str:
@@ -524,13 +546,21 @@ async def api_team_add_attachment(
         return JSONResponse({"ok": False, "error": "task not found"}, status_code=404)
     if kind not in ("writeup", "file", "image"):
         return JSONResponse({"ok": False, "error": "invalid kind"}, status_code=400)
-    data = await file.read()
-    if len(data) > MAX_ATTACHMENT_BYTES:
-        mb = MAX_ATTACHMENT_BYTES // (1024 * 1024)
-        return JSONResponse(
-            {"ok": False, "error": f"file too large — the limit is {mb} MB"},
-            status_code=413,
-        )
+    # Read in bounded chunks and abort as soon as the cap is exceeded, so an
+    # oversized upload (nginx allows a little above this) is never fully buffered
+    # in memory before the check.
+    chunks: list[bytes] = []
+    total = 0
+    while chunk := await file.read(1 << 20):  # 1 MB
+        total += len(chunk)
+        if total > MAX_ATTACHMENT_BYTES:
+            mb = MAX_ATTACHMENT_BYTES // (1024 * 1024)
+            return JSONResponse(
+                {"ok": False, "error": f"file too large — the limit is {mb} MB"},
+                status_code=413,
+            )
+        chunks.append(chunk)
+    data = b"".join(chunks)
     att = TaskAttachment(
         task_id=task_id,
         kind=kind,
@@ -568,11 +598,22 @@ async def api_team_get_attachment(
     att = await db.get(TaskAttachment, attachment_id)
     if not att or att.task_id != task_id:
         return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
-    return Response(
-        content=att.data,
+
+    blob = att.data or b""
+
+    def _iter():
+        view = memoryview(blob)
+        for i in range(0, len(view), 1 << 20):
+            yield view[i : i + (1 << 20)]
+
+    # Strip characters that would break the Content-Disposition header.
+    safe_name = re.sub(r'[\r\n"]', " ", att.filename or "file")
+    return StreamingResponse(
+        _iter(),
         media_type=att.content_type or "application/octet-stream",
         headers={
-            "Content-Disposition": f'inline; filename="{att.filename}"',
+            "Content-Disposition": f'inline; filename="{safe_name}"',
+            "Content-Length": str(len(blob)),
         },
     )
 

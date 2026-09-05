@@ -48,6 +48,9 @@ class ManualPlatformClient:
         self.ctf_id = int(ctf_id)
         self.base_url = f"manual://ctf/{self.ctf_id}"
         self.token = ""
+        # Interface parity with the other platform clients (the UI reads these).
+        self.username = "manual"
+        self.password = ""
         # name -> task id, filled by fetch; used by submit to find the row.
         self._task_ids: dict[str, int] = {}
 

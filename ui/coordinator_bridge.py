@@ -103,12 +103,13 @@ def install_bridge(deps: Any, cost_tracker: Any) -> None:
         "ctfd_status",
         {
             "connected": True,
-            "url": deps.ctfd.base_url,
-            "user": deps.ctfd.username or "token",
+            "url": getattr(deps.ctfd, "base_url", ""),
+            "user": getattr(deps.ctfd, "username", "") or "token",
         },
     )
 
-    # Wrap CTFdClient methods to emit events
+    # Wrap CTFdClient methods to emit events. Only CTFdClient has ``_get``;
+    # rctf/generic/manual clients don't, so patching is a no-op for them.
     _patch_ctfd(deps.ctfd, bus)
 
     # Wrap swarm creation to emit challenge events
@@ -116,8 +117,10 @@ def install_bridge(deps: Any, cost_tracker: Any) -> None:
 
 
 def _patch_ctfd(ctfd: Any, bus: Any) -> None:
-    """Patch CTFdClient to emit connection status events."""
-    original_get = ctfd._get
+    """Patch CTFdClient to emit connection status events (CTFd-only)."""
+    original_get = getattr(ctfd, "_get", None)
+    if original_get is None:
+        return  # rctf/generic/manual clients have no ``_get`` to wrap
 
     async def patched_get(path: str):
         try:

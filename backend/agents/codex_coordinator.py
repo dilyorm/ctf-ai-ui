@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import itertools
 import json
 import logging
+import os
 from typing import Any
 
 from backend.agents.coordinator_core import (
@@ -146,16 +148,50 @@ class CodexCoordinator:
         self._reader_task: asyncio.Task | None = None
         self._turn_done: asyncio.Event = asyncio.Event()
         self._turn_error: str | None = None
+        self._stderr_task: asyncio.Task | None = None
+        self._stderr: collections.deque[str] = collections.deque(maxlen=40)
+
+    async def _drain_stderr(self) -> None:
+        """Keep the CLI's stderr so a startup failure is diagnosable."""
+        if not self._proc or not self._proc.stderr:
+            return
+        try:
+            while True:
+                line = await self._proc.stderr.readline()
+                if not line:
+                    break
+                text = line.decode("utf-8", "replace").rstrip()
+                if text:
+                    self._stderr.append(text)
+                    logger.debug("codex app-server stderr: %s", text)
+        except Exception:
+            pass
+
+    @property
+    def stderr_text(self) -> str:
+        return "\n".join(self._stderr)
 
     async def start(self) -> None:
+        # Codex keeps its credentials under HOME/.codex, so pointing HOME at the
+        # leased pool account's directory is what signs the coordinator in as
+        # that account. Without this the coordinator ignored both the pool and
+        # `settings.codex_config_dir` and used whatever ~/.codex happened to hold.
+        env = {**os.environ}
+        config_dir = getattr(self.deps.settings, "codex_config_dir", "") or ""
+        if config_dir:
+            env["HOME"] = config_dir
+            env.pop("OPENAI_API_KEY", None)  # force subscription auth
         self._proc = await asyncio.create_subprocess_exec(
             "codex",
             "app-server",
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
+            # Not DEVNULL: a failure to start here used to be completely silent.
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
         )
         self._reader_task = asyncio.create_task(self._read_loop())
+        self._stderr_task = asyncio.create_task(self._drain_stderr())
 
         await self._rpc(
             "initialize",

@@ -42,6 +42,13 @@ def sdk_env(config_dir: str = "") -> dict[str, str]:
     }
     if config_dir:
         env["CLAUDE_CONFIG_DIR"] = config_dir
+        # ANTHROPIC_API_KEY takes precedence over the credentials in the config
+        # dir (verified against claude 2.1.261: with the key set the CLI answers
+        # normally from an empty config dir; blanked, it reports "Not logged
+        # in"). A config dir here means a specific subscription was chosen — a
+        # leased pool account, or an operator override — so the key must not
+        # quietly win and bill API usage instead.
+        env["ANTHROPIC_API_KEY"] = ""
     return env
 
 

@@ -9,12 +9,28 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
+import re
 
 from backend.agents.claude_coordinator import run_claude_coordinator
 from backend.agents.codex_coordinator import run_codex_coordinator
 from backend.config import Settings
 
 logger = logging.getLogger(__name__)
+
+# Which pool provider backs each coordinator, and the Settings field its
+# leased config directory is injected into.
+_COORDINATOR_POOL = {
+    "claude": ("claude", "claude_config_dir"),
+    "codex": ("codex", "codex_config_dir"),
+}
+
+# A coordinator that dies on a usage limit should rotate onto another pooled
+# account rather than ending the run.
+_QUOTA = re.compile(
+    r"429|rate.?limit|quota|too many requests|usage limit|out of credits|insufficient",
+    re.I,
+)
+_MAX_ROTATIONS = 3
 
 
 class GlobalRunManager:
@@ -25,6 +41,9 @@ class GlobalRunManager:
         self._started_at: dt.datetime | None = None
         self._last_result: dict | None = None
         self._last_error: str | None = None
+        # Label of the pooled account the coordinator is currently signed in as.
+        self._coordinator_account: str | None = None
+        self._coordinator_note: str | None = None
         self._max_concurrent: int = 10
         # Per-challenge runtime controls (names are challenge slugs/display names)
         self.stopped_challenges: set[str] = set()
@@ -40,6 +59,8 @@ class GlobalRunManager:
             "started_at": self._started_at.isoformat() if self._started_at else None,
             "last_result": self._last_result,
             "last_error": self._last_error,
+            "coordinator_account": self._coordinator_account,
+            "coordinator_note": self._coordinator_note,
             "max_concurrent": self._max_concurrent,
             "stopped_challenges": sorted(self.stopped_challenges),
             "priority_challenges": sorted(self.priority_challenges),
@@ -113,42 +134,131 @@ class GlobalRunManager:
             self.priority_challenges = set()
             self.excluded_challenges = set()
 
+            async def _run_once(run_settings: Settings) -> dict:
+                if coordinator_backend == "codex":
+                    return await run_codex_coordinator(
+                        settings=run_settings,
+                        model_specs=model_specs,
+                        challenges_root=challenges_dir,
+                        exclude_challenges=exclude_challenges,
+                        exclude_challenge_regex=exclude_challenge_regex,
+                        no_submit=no_submit,
+                        coordinator_model=coordinator_model,
+                        msg_port=msg_port,
+                    )
+                return await run_claude_coordinator(
+                    settings=run_settings,
+                    model_specs=model_specs,
+                    challenges_root=challenges_dir,
+                    exclude_challenges=exclude_challenges,
+                    exclude_challenge_regex=exclude_challenge_regex,
+                    no_submit=no_submit,
+                    coordinator_model=coordinator_model,
+                    msg_port=msg_port,
+                )
+
             async def _runner() -> None:
+                from backend.account_pool import get_account_pool
+
+                pool = get_account_pool()
+                lease = None
+                exclude_id: int | None = None
                 try:
-                    if coordinator_backend == "codex":
-                        result = await run_codex_coordinator(
-                            settings=settings,
-                            model_specs=model_specs,
-                            challenges_root=challenges_dir,
-                            exclude_challenges=exclude_challenges,
-                            exclude_challenge_regex=exclude_challenge_regex,
-                            no_submit=no_submit,
-                            coordinator_model=coordinator_model,
-                            msg_port=msg_port,
+                    for attempt in range(_MAX_ROTATIONS + 1):
+                        lease, run_settings = await self._lease_coordinator_account(
+                            coordinator_backend, settings, exclude_id=exclude_id
                         )
-                    else:
-                        result = await run_claude_coordinator(
-                            settings=settings,
-                            model_specs=model_specs,
-                            challenges_root=challenges_dir,
-                            exclude_challenges=exclude_challenges,
-                            exclude_challenge_regex=exclude_challenge_regex,
-                            no_submit=no_submit,
-                            coordinator_model=coordinator_model,
-                            msg_port=msg_port,
-                        )
-                    self._last_result = result
+                        try:
+                            self._last_result = await _run_once(run_settings)
+                            return
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as e:
+                            # A usage limit on the coordinator's own account should
+                            # cool it down and move to the next one, the same way a
+                            # solver rotates, instead of ending the whole run.
+                            if lease is None or not _QUOTA.search(str(e)) or attempt == _MAX_ROTATIONS:
+                                raise
+                            await pool.mark_cooldown(lease)
+                            exclude_id = lease.account_id
+                            lease = None  # mark_cooldown released it
+                            logger.warning(
+                                "Coordinator account hit a usage limit; rotating (attempt %d/%d): %s",
+                                attempt + 1, _MAX_ROTATIONS, e,
+                            )
+                        finally:
+                            if lease is not None:
+                                await pool.release(lease)
+                                lease = None
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
                     logger.error("run failed: %s", e, exc_info=True)
                     self._last_error = str(e)
                 finally:
-                    # Keep started_by/at for visibility; running bit comes from task state.
-                    pass
+                    if lease is not None:
+                        await pool.release(lease)
+                    self._coordinator_account = None
 
             self._task = asyncio.create_task(_runner(), name="global-ctf-run")
             return {"ok": True}
+
+    async def _lease_coordinator_account(
+        self, backend: str, settings: Settings, *, exclude_id: int | None = None
+    ):
+        """Lease a pooled account for the coordinator, if one is connected.
+
+        Returns ``(lease, settings)`` — the settings carry the leased account's
+        isolated config dir so the coordinator's CLI signs in as that account.
+        When no account is connected (or none is free) this falls back to the
+        ambient configuration, which is how the coordinator worked before: an
+        API key, or a config dir set in Settings.
+        """
+        from backend.account_pool import get_account_pool
+
+        mapping = _COORDINATOR_POOL.get(backend)
+        if not mapping:
+            self._coordinator_account = None
+            self._coordinator_note = None
+            return None, settings
+        provider, field = mapping
+        pool = get_account_pool()
+        if not pool.has_accounts(provider):
+            self._coordinator_account = None
+            self._coordinator_note = (
+                f"No {provider} account in the pool — the coordinator is using the "
+                f"API key / server configuration."
+            )
+            return None, settings
+
+        lease = await pool.lease(provider, exclude_id=exclude_id)
+        if lease is None:
+            self._coordinator_account = None
+            self._coordinator_note = (
+                f"All {provider} accounts are busy or cooling — the coordinator fell "
+                f"back to the API key / server configuration."
+            )
+            logger.warning("Coordinator could not lease a '%s' account", provider)
+            return None, settings
+
+        self._coordinator_account = lease.label
+        # The coordinator holds its account for the whole run. If that was the
+        # last slot, every solver on this provider will park, so say so plainly
+        # rather than letting the run look stuck.
+        if pool.free(provider) == 0:
+            self._coordinator_note = (
+                f"The coordinator holds the only free {provider} slot, so {provider} "
+                f"solvers will park. Raise 'Max' on a {provider} account (Accounts page) "
+                f"to give solvers room."
+            )
+            logger.warning(
+                "Coordinator leased the last free '%s' slot (%s); solvers will park",
+                provider, lease.label,
+            )
+        else:
+            self._coordinator_note = None
+        logger.info("Coordinator signed in as pooled account %s (%s)", lease.label, provider)
+        return lease, settings.model_copy(update={field: lease.config_dir})
 
     async def stop(self, *, user_id: int, force: bool = False) -> dict:
         async with self._lock:

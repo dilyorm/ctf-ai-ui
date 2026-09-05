@@ -88,6 +88,10 @@ button{ font-family:inherit; }
 .top{ grid-area:top; background:var(--bg2); border-bottom:1px solid var(--border);
   display:flex; align-items:center; gap:14px; padding:0 18px; z-index:15; }
 .top .screen-name{ font-family:var(--cond); font-weight:700; font-size:17px; }
+.runnote{ margin:8px 0 0; font-size:12px; line-height:1.5; color:var(--text3); }
+.runnote .who{ color:var(--accent); font-family:var(--mono); }
+.runnote.warn{ color:#e6b94a; }
+.runnote.err{ color:#e66; white-space:pre-wrap; font-family:var(--mono); }
 .top .crumb{ color:var(--text3); font-size:12px; }
 .top-sp{ flex:1; }
 .pill{ display:inline-flex; align-items:center; gap:7px; padding:5px 10px; border-radius:99px;
@@ -356,6 +360,7 @@ select, input, textarea{ font-family:inherit; }
         <button class="btn danger" id="btnStop" disabled>■ Stop</button>
         <span class="tag" id="runStatusTag">idle</span>
       </div>
+      <div class="runnote" id="runNote" hidden></div>
 
       <div class="grid kpis" id="kpis"></div>
 

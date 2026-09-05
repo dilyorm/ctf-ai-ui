@@ -410,6 +410,26 @@
     $("#btnStart").disabled = state.run.running; $("#btnStop").disabled = !state.run.running;
     const tag = $("#runStatusTag"); tag.textContent = state.run.running ? "running" : (st.last_error ? "error" : "idle");
     tag.className = "tag " + (state.run.running ? "green" : "");
+
+    // Which pooled account the coordinator is signed in as, any capacity
+    // warning, and the last failure — previously all of this was only visible
+    // in the server journal.
+    const note = $("#runNote");
+    if (st.last_error) {
+      note.className = "runnote err";
+      note.textContent = st.last_error;
+      note.hidden = false;
+    } else if (st.coordinator_note) {
+      note.className = "runnote warn";
+      note.textContent = st.coordinator_note;
+      note.hidden = false;
+    } else if (st.coordinator_account) {
+      note.className = "runnote";
+      note.innerHTML = 'Coordinator signed in as <span class="who">' + esc(st.coordinator_account) + "</span>";
+      note.hidden = false;
+    } else {
+      note.hidden = true;
+    }
   }
   $("#btnStart").onclick = runStart; $("#btnStop").onclick = runStop;
 

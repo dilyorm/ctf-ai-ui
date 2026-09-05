@@ -15,6 +15,7 @@ from claude_agent_sdk import (
     tool,
 )
 
+from backend.agents.claude_sdk import StderrCapture, sdk_env
 from backend.agents.coordinator_core import (
     do_broadcast,
     do_bump_agent,
@@ -200,17 +201,12 @@ async def run_claude_coordinator(
             }
         }
 
+    stderr_capture = StderrCapture("coordinator")
     options = ClaudeAgentOptions(
         model=resolved_model,
         system_prompt=COORDINATOR_PROMPT,
-        env={
-            "CLAUDECODE": "",
-            **(
-                {"CLAUDE_CONFIG_DIR": settings.claude_config_dir}
-                if getattr(settings, "claude_config_dir", "")
-                else {}
-            ),
-        },
+        env=sdk_env(getattr(settings, "claude_config_dir", "")),
+        stderr=stderr_capture,
         cli_path=(settings.claude_cli_path or None),
         mcp_servers={"coordinator": mcp_server},
         allowed_tools=list(allowed),
@@ -220,7 +216,15 @@ async def run_claude_coordinator(
         },
     )
 
-    async with ClaudeSDKClient(options=options) as client:
+    try:
+        client_cm = ClaudeSDKClient(options=options)
+        await client_cm.__aenter__()
+    except Exception as e:
+        # The SDK's own message is "Check stderr output for details"; put the
+        # details in the error so the run page can show them.
+        raise RuntimeError(stderr_capture.explain(e)) from e
+
+    async with client_cm as client:
 
         async def turn_fn(msg: str) -> None:
             logger.debug(f"Coordinator query: {msg[:200]}")

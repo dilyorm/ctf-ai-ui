@@ -24,6 +24,7 @@ from claude_agent_sdk import (
     TextBlock,
 )
 
+from backend.agents.claude_sdk import StderrCapture, sdk_env
 from backend.cost_tracker import CostTracker
 from backend.ctfd import CTFdClient
 from backend.loop_detect import LoopDetector
@@ -80,6 +81,7 @@ class ClaudeSolver:
         self.agent_name = f"{meta.name}/{self.model_id}"
 
         self._client: ClaudeSDKClient | None = None
+        self._stderr_capture = StderrCapture(f"{meta.name}/{self.model_id}")
         self._session_id: str | None = None
         self._container_id: str = ""
         self._step_count = 0
@@ -285,11 +287,8 @@ class ClaudeSolver:
             model=self.model_id,
             system_prompt=system_prompt,
             effort=effort,
-            # Clear CLAUDECODE to prevent nested-session rejection when run from coordinator
-            env={
-                "CLAUDECODE": "",
-                **({"CLAUDE_CONFIG_DIR": config_dir} if config_dir else {}),
-            },
+            env=sdk_env(config_dir),
+            stderr=self._stderr_capture,
             cli_path=(getattr(self.settings, "claude_cli_path", "") or None),
             allowed_tools=["Bash", "WebFetch", "WebSearch"],
             permission_mode="bypassPermissions",
@@ -308,16 +307,18 @@ class ClaudeSolver:
         try:
             await self._client.__aenter__()
         except Exception as e:
-            # Make login/session failures actionable in logs.
+            # Make login/session failures actionable in logs *and* upstream: the
+            # SDK's own message is only "Check stderr output for details".
+            detail = self._stderr_capture.explain(e)
             logger.error(
                 "[%s] Failed to start Claude SDK client (cli_path=%r, config_dir=%r): %s",
                 self.agent_name,
                 getattr(self.settings, "claude_cli_path", "") or None,
                 config_dir or None,
-                e,
+                detail,
                 exc_info=True,
             )
-            raise
+            raise RuntimeError(detail) from e
         self.tracer.event("start", challenge=self.meta.name, model=self.model_id)
         self.tracer.event(
             "claude_sdk_config",

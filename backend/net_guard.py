@@ -53,15 +53,18 @@ async def assert_public_url(url: str) -> None:
     if host.lower() in BLOCKED_HOSTNAMES:
         raise ValueError(f"Refusing to fetch an internal host ({host}).")
 
-    # If it's already a literal IP, check it directly.
+    # If it's already a literal IP, check it directly and skip DNS. Parse it
+    # explicitly rather than asking _addr_blocked, which reports "blocked" for
+    # anything that isn't an IP at all — that made every hostname fail here as
+    # "a non-public address" before it was ever resolved.
     try:
-        if _addr_blocked(host):
+        literal = ipaddress.ip_address(host)
+    except ValueError:
+        literal = None
+    if literal is not None:
+        if _addr_blocked(str(literal)):
             raise ValueError(f"Refusing to fetch a non-public address ({host}).")
         return
-    except ValueError as e:
-        if "non-public" in str(e):
-            raise
-        # not a literal IP — resolve it below
 
     port = p.port or (443 if p.scheme == "https" else 80)
     loop = asyncio.get_event_loop()

@@ -111,8 +111,10 @@ class AccountPool:
                 new: dict[int, _Account] = {}
                 for r in rows:
                     secret = ""
-                    if r.provider in _TOKEN_PROVIDERS:
-                        # Token providers: authenticated iff a credential is stored.
+                    # Decide per account, not per provider: antigravity can be
+                    # connected either with a Google account through the `agy`
+                    # CLI (config dir) or with a pasted Gemini key (secret_enc).
+                    if r.secret_enc or r.provider in _TOKEN_PROVIDERS:
                         secret = open_opt(r.secret_enc) if r.secret_enc else ""
                         if not secret:
                             continue

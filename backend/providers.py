@@ -32,9 +32,13 @@ class Provider:
     label: str
     connect_kind: str  # "cli" | "device" | "token"
     # For token providers: the Settings field the leased credential is injected
-    # into, and the OpenAI-compatible endpoint used to drive it.
+    # into, and the OpenAI-compatible endpoint used to drive it. A provider may
+    # declare both a CLI sign-in and these, in which case each *account* picks a
+    # mode: a stored secret means token, an on-disk config dir means CLI.
     token_field: str = ""
     openai_base_url: str = ""
+    # For CLI providers: the binary that has to exist on the server.
+    cli_binary: str = ""
     # Where an operator gets the token (shown in the connect UI).
     token_help: str = ""
     token_url: str = ""
@@ -47,11 +51,11 @@ class Provider:
 # OpenAI-compatible surfaces; adjust here (one place) if a provider moves.
 PROVIDERS: dict[str, Provider] = {
     "claude": Provider(
-        id="claude", label="Claude (Anthropic)", connect_kind="cli",
+        id="claude", label="Claude (Anthropic)", connect_kind="cli", cli_binary="claude",
         token_help="Sign in to your Claude subscription via the Claude Code CLI.",
     ),
     "codex": Provider(
-        id="codex", label="Codex (ChatGPT)", connect_kind="cli",
+        id="codex", label="Codex (ChatGPT)", connect_kind="cli", cli_binary="codex",
         token_help="Sign in to your ChatGPT/Codex subscription via the Codex CLI.",
     ),
     "copilot": Provider(
@@ -60,7 +64,7 @@ PROVIDERS: dict[str, Provider] = {
         token_url="https://github.com/login/device",
     ),
     "grok": Provider(
-        id="grok", label="Grok (xAI)", connect_kind="cli",
+        id="grok", label="Grok (xAI)", connect_kind="cli", cli_binary="grok",
         token_help="Sign in to your Grok/SuperGrok subscription via the xAI CLI (device login).",
         models=("grok-4.6", "grok-build-0.1", "grok-4.5", "grok-4.3"),
         vision_models=("grok-4.6", "grok-4.5"),
@@ -74,25 +78,41 @@ PROVIDERS: dict[str, Provider] = {
         models=("kimi-k2-thinking-turbo", "kimi-k2-thinking"),
         vision_models=(),
     ),
+    # Dual-mode: sign in with a Google account through the `agy` CLI (the real
+    # subscription), or paste a Gemini API key. `agy` reads HOME/XDG for all of
+    # its state, so pointing those at a per-account directory keeps several
+    # Google accounts isolated and poolable.
     "antigravity": Provider(
-        id="antigravity", label="Google Antigravity (Gemini)", connect_kind="token",
+        id="antigravity", label="Google Antigravity (Gemini)", connect_kind="cli",
+        cli_binary="agy",
         token_field="antigravity_api_key",
         openai_base_url="https://generativelanguage.googleapis.com/v1beta/openai",
-        token_help="Paste a Google AI (Gemini) API key from aistudio.google.com. Antigravity's own CLI stores creds in the OS keyring and can't be pooled headlessly, so the Gemini key is the portable path.",
+        token_help="Sign in with the Google account that has Antigravity access, or paste a Gemini API key from aistudio.google.com.",
         token_url="https://aistudio.google.com/app/apikey",
         models=("gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-2.5-pro"),
         vision_models=("gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-2.5-pro"),
     ),
 }
 
-# Providers whose credential lives in secret_enc (not a config dir).
+# Providers whose credential can *only* live in secret_enc (no config dir).
 TOKEN_POOL_PROVIDERS: set[str] = {
     p.id for p in PROVIDERS.values() if p.connect_kind in ("device", "token")
 }
-# Providers driven by the Pydantic-AI OpenAI-compatible Solver via a pasted token.
+# Providers reachable over an OpenAI-compatible endpoint with a pasted token.
+# Keyed off the endpoint, not connect_kind, so a dual-mode provider
+# (antigravity: `agy` sign-in *or* a Gemini key) keeps its token path.
 OPENAI_COMPAT_PROVIDERS: dict[str, Provider] = {
-    p.id: p for p in PROVIDERS.values() if p.connect_kind == "token"
+    p.id: p for p in PROVIDERS.values() if p.openai_base_url
 }
+# Providers that can be connected by driving a CLI on the server.
+CLI_PROVIDERS: dict[str, Provider] = {
+    p.id: p for p in PROVIDERS.values() if p.connect_kind == "cli"
+}
+
+
+def cli_binary_for(pid: str) -> str:
+    p = PROVIDERS.get(pid)
+    return p.cli_binary if p else ""
 
 
 def provider(pid: str) -> Provider | None:

@@ -80,18 +80,20 @@
       <button class="btn btn-primary" id="btn-connect-claude" onclick="connect('claude')">+ Claude</button>
       <button class="btn btn-primary" id="btn-connect-codex" onclick="connect('codex')">+ Codex</button>
       <button class="btn btn-primary" id="btn-connect-grok" onclick="connect('grok')">+ Grok</button>
+      <button class="btn btn-primary" id="btn-connect-antigravity" onclick="connect('antigravity')">+ Antigravity</button>
       <button class="btn btn-primary" onclick="connectCopilot()">+ Copilot</button>
       <button class="btn" onclick="connectToken('kimi')">+ Kimi</button>
-      <button class="btn" onclick="connectToken('antigravity')">+ Antigravity</button>
+      <button class="btn" onclick="connectToken('antigravity')">+ Gemini key</button>
       <button class="btn btn-ghost btn-sm" onclick="load()">Refresh</button>
     </div>
     <div id="cap-warn" class="cap-warn" style="display:none"></div>
     <p class="page-desc" style="margin-top:-6px;font-size:12px;">
-      <b>Claude, Codex, Grok</b> sign in with your subscription via their CLI — click, open the link,
-      approve, done. Each account gets its own isolated config dir, so add as many as you like and the
-      pool rotates + switches between them. <b>Copilot</b> uses GitHub device login.
-      <b>Kimi</b> has no headless CLI login, and <b>Antigravity</b> stores creds in the OS keyring
-      (can't be pooled) — so both connect with a subscription token (Kimi Code key / Gemini key), verified live.
+      <b>Claude, Codex, Grok, Antigravity</b> sign in with your subscription via their CLI — click, open
+      the link, approve, paste the code back. Each account gets its own isolated config dir, so add as
+      many as you like and the pool rotates + switches between them. <b>Antigravity</b> signs in with the
+      Google account that has access. <b>Copilot</b> uses GitHub device login.
+      <b>Kimi</b> has no headless CLI login, so it connects with a subscription token; <b>Gemini key</b>
+      is the API-key alternative to an Antigravity Google account. Both are verified live.
     </p>
 
     <div class="acct-table-wrap">
@@ -194,7 +196,7 @@
     // ── Token providers (Grok / Kimi / Antigravity) ──────────────────
     const TOKEN_HELP = {
       kimi: { help: "Paste a Moonshot/Kimi key (platform.kimi.ai → API keys). Kimi Code subscription covers this.", url: "https://platform.kimi.ai/console/api-keys" },
-      antigravity: { help: "Paste a Google AI (Gemini) API key from aistudio.google.com.", url: "https://aistudio.google.com/app/apikey" },
+      antigravity: { help: "Paste a Google AI (Gemini) API key from aistudio.google.com. To use an Antigravity subscription instead, close this and press “+ Antigravity” to sign in with the Google account.", url: "https://aistudio.google.com/app/apikey" },
     };
     let tkProvider = null, tkVerifiedModels = [];
     function connectToken(provider) {
@@ -570,8 +572,9 @@
         document.getElementById('modal-code-link').textContent = 'Open sign-in page';
         document.getElementById('modal-code-link').href = d.auth_url;
       } else if (d.auth_url) {
+        const issuer = provider === 'antigravity' ? 'Google' : 'Anthropic';
         msg.textContent = d.needs_code
-          ? 'Open this URL, authorize, copy the whole code Anthropic shows you (including the part after #), then come back and paste it below. Each code works once — if it is rejected, reopen the link for a fresh one.'
+          ? `Open this URL, approve with the ${provider === 'antigravity' ? 'Google account that has Antigravity access' : 'account you want to pool'}, copy the whole code ${issuer} shows you, then come back and paste it below. Each code works once — if it is rejected, reopen the link for a fresh one.`
           : 'Open this URL and sign in, then come back — this page finishes on its own.';
         urlBox.style.display = 'block';
         document.getElementById('modal-url-text').textContent = d.auth_url;

@@ -1,8 +1,9 @@
 """Shared helpers for locating and validating CLI subscription credentials.
 
 A subscription "account" is an isolated config directory that holds the OAuth
-tokens written by `claude setup-token` (Claude Code) or `codex auth login`
-(Codex). These helpers answer "does this directory contain usable credentials?"
+credentials written by a provider's CLI — `claude auth login`, `codex login`,
+`grok login`, or `agy`'s Google sign-in. These helpers answer "does this
+directory contain usable credentials?"
 and are shared by the web sign-in flow (ui.server) and the account pool
 (backend.account_pool) so the two never disagree on what "authenticated" means.
 """
@@ -17,6 +18,16 @@ import os
 CLAUDE_CONFIG_ROOT = os.path.join(os.path.expanduser("~"), ".claude-ctf-agents")
 CODEX_CONFIG_ROOT = os.path.join(os.path.expanduser("~"), ".codex-ctf-agents")
 GROK_CONFIG_ROOT = os.path.join(os.path.expanduser("~"), ".grok-ctf-agents")
+ANTIGRAVITY_CONFIG_ROOT = os.path.join(os.path.expanduser("~"), ".agy-ctf-agents")
+
+# The Antigravity CLI (`agy`) keeps its Google session in the OS keyring, with a
+# file fallback when no Secret Service is reachable — either way there is no
+# documented credentials path to look for. What it *does* offer is a reliable
+# oracle: `agy models` exits non-zero with "Please sign in ..." until the account
+# is signed in. The connect flow runs that once sign-in finishes and drops this
+# marker (holding the model list it reported), so routine authentication checks
+# stay a cheap file stat like every other provider.
+ANTIGRAVITY_MARKER = ".ctf-agent-authenticated.json"
 
 
 def claude_is_authenticated(config_dir: str) -> bool:
@@ -88,6 +99,18 @@ def grok_is_authenticated(config_dir: str) -> bool:
     return False
 
 
+def antigravity_is_authenticated(config_dir: str) -> bool:
+    """True if a completed `agy` sign-in was recorded in *config_dir*."""
+    if not config_dir:
+        return False
+    path = os.path.join(config_dir, ANTIGRAVITY_MARKER)
+    try:
+        with open(path) as f:
+            return bool(json.load(f))
+    except Exception:
+        return False
+
+
 def is_authenticated(provider: str, config_dir: str) -> bool:
     if provider == "claude":
         return claude_is_authenticated(config_dir)
@@ -95,4 +118,6 @@ def is_authenticated(provider: str, config_dir: str) -> bool:
         return codex_is_authenticated(config_dir)
     if provider == "grok":
         return grok_is_authenticated(config_dir)
+    if provider == "antigravity":
+        return antigravity_is_authenticated(config_dir)
     return False

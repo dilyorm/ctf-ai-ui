@@ -44,6 +44,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from backend.account_pool import get_account_pool
 from backend.auth import hash_password, verify_password
 from backend.cli_auth import (
+    ANTIGRAVITY_CONFIG_ROOT,
     CLAUDE_CONFIG_ROOT,
     CODEX_CONFIG_ROOT,
     GROK_CONFIG_ROOT,
@@ -1922,25 +1923,33 @@ async def api_agent_context(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _new_account_config_dir(provider: str) -> str:
+_CONFIG_ROOTS = {
+    "claude": CLAUDE_CONFIG_ROOT,
+    "codex": CODEX_CONFIG_ROOT,
+    "grok": GROK_CONFIG_ROOT,
+    "antigravity": ANTIGRAVITY_CONFIG_ROOT,
+}
+
+
+def _new_account_config_dir(provider: str, *, cli: bool = True) -> str:
+    """Where a new account keeps its credentials.
+
+    ``cli`` accounts get a real isolated directory; token accounts store their
+    credential in ``secret_enc`` and only need a unique placeholder to satisfy
+    the NOT NULL + UNIQUE constraint on the column. Antigravity can be connected
+    either way, so the caller says which.
+    """
     from backend.providers import TOKEN_POOL_PROVIDERS
 
-    if provider in TOKEN_POOL_PROVIDERS:
-        # Token providers (copilot/kimi/antigravity): no on-disk config dir.
-        # Use a synthetic unique value to satisfy the NOT NULL + UNIQUE
-        # constraint on config_dir.
+    if not cli or provider in TOKEN_POOL_PROVIDERS:
         return f"{provider}:{uuid.uuid4().hex}"
-    root = {"claude": CLAUDE_CONFIG_ROOT, "codex": CODEX_CONFIG_ROOT, "grok": GROK_CONFIG_ROOT}.get(provider, CODEX_CONFIG_ROOT)
+    root = _CONFIG_ROOTS.get(provider, CODEX_CONFIG_ROOT)
     return os.path.join(root, f"acct-{uuid.uuid4().hex[:12]}")
 
 
 def _rmtree_managed(config_dir: str) -> None:
     """Delete an account's config dir, but only under a root we own."""
-    if config_dir and (
-        config_dir.startswith(CLAUDE_CONFIG_ROOT)
-        or config_dir.startswith(CODEX_CONFIG_ROOT)
-        or config_dir.startswith(GROK_CONFIG_ROOT)
-    ):
+    if config_dir and any(config_dir.startswith(r) for r in _CONFIG_ROOTS.values()):
         shutil.rmtree(config_dir, ignore_errors=True)
 
 
@@ -1959,6 +1968,10 @@ _CLI_BINARIES: dict[str, dict] = {
     "claude": {"bin": "claude", "install": "npm install -g @anthropic-ai/claude-code"},
     "codex": {"bin": "codex", "install": "npm install -g @openai/codex"},
     "grok": {"bin": "grok", "install": "curl -fsSL https://x.ai/cli/install.sh | bash"},
+    "antigravity": {
+        "bin": "agy",
+        "install": "curl -fsSL https://antigravity.google/cli/install.sh | bash -s -- -d /usr/local/bin",
+    },
 }
 _cli_probe_cache: tuple[float, dict] = (0.0, {})
 
@@ -2015,7 +2028,10 @@ def _account_authed(acct: PooledAccount) -> bool:
     """
     from backend.providers import TOKEN_POOL_PROVIDERS
 
-    if acct.provider in TOKEN_POOL_PROVIDERS:
+    # Decide per account, not per provider: antigravity can be connected either
+    # by signing a Google account into the `agy` CLI (real config dir) or by
+    # pasting a Gemini key (credential in secret_enc).
+    if acct.secret_enc or acct.provider in TOKEN_POOL_PROVIDERS:
         return bool(acct.secret_enc)
     return cli_is_authenticated(acct.provider, acct.config_dir)
 
@@ -2152,7 +2168,7 @@ async def api_account_connect_token(
         provider=provider,
         label=label or _default_account_label(provider),
         owner_user_id=user.id,
-        config_dir=_new_account_config_dir(provider),
+        config_dir=_new_account_config_dir(provider, cli=False),
         secret_enc=seal_opt(token),
         max_concurrent=max_conc,
     )
@@ -2227,7 +2243,7 @@ async def api_account_connect_start(
     Each connect creates its own isolated config dir + pool row, so any user can
     add as many accounts as they want.
     """
-    if provider not in ("claude", "codex", "copilot", "grok"):
+    if provider not in ("claude", "codex", "copilot", "grok", "antigravity"):
         return JSONResponse({"ok": False, "error": "unknown provider"}, status_code=400)
     body = await request.json() if await request.body() else {}
     label = (body.get("label") or "").strip()
@@ -2276,6 +2292,8 @@ async def api_account_connect_start(
         result = await mgr.start_claude(acct.id, config_dir)
     elif provider == "grok":
         result = await mgr.start_grok(acct.id, config_dir)
+    elif provider == "antigravity":
+        result = await mgr.start_antigravity(acct.id, config_dir)
     else:
         result = await mgr.start_codex(acct.id, config_dir)
 
